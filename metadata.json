@@ -1,0 +1,5 @@
+{
+  "name": "Shelly the Safety Turtle",
+  "description": "A safe, AI-powered companion for children with a monitoring dashboard for parents.",
+  "requestFramePermissions": ["microphone"]
+}
