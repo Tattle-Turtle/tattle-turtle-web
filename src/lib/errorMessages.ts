@@ -56,6 +56,20 @@ export const LOADING_MESSAGES = {
   character: 'Creating your new look...',
 } as const;
 
+/**
+ * Kid-friendly encouragement and reward copy (Ramotion, Raw.Studio: positive reinforcement, immediate feedback).
+ */
+export const KID_COPY = {
+  badgeTitle: "You did it!",
+  badgeSubtitle: "You're a Brave Explorer!",
+  rewardCollect: "You did it! Collect your reward!",
+  rewardPoints: "Brave points",
+  greatCall: "Great call!",
+  collect: "Collect",
+  collectLater: "Collect later",
+  later: "Later",
+} as const;
+
 /** Map Web Speech API / voice recognition error codes to friendly messages */
 export function getVoiceErrorMessage(code: string | null | undefined): string | null {
   if (!code) return null;

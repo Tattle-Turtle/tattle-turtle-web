@@ -15,6 +15,9 @@ console.log("🔧 Environment Check:");
 console.log("  - GEMINI_API_KEY:", process.env.GEMINI_API_KEY ? "✓ Set" : "✗ Missing");
 console.log("  - SUPABASE_URL:", process.env.SUPABASE_URL ? "✓ Set" : "✗ Missing");
 console.log("  - SUPABASE_ANON_KEY:", process.env.SUPABASE_ANON_KEY ? "✓ Set" : "✗ Missing");
+console.log("  - PLIVO_AUTH_ID:", process.env.PLIVO_AUTH_ID ? "✓ Set" : "✗ Missing");
+console.log("  - PLIVO_AUTH_TOKEN:", process.env.PLIVO_AUTH_TOKEN ? "✓ Set" : "✗ Missing");
+console.log("  - PLIVO_PHONE_NUMBER:", process.env.PLIVO_PHONE_NUMBER ? "✓ Set" : "✗ Missing");
 
 // Initialize Supabase
 const supabaseUrl = process.env.SUPABASE_URL || "";
@@ -877,6 +880,25 @@ app.post("/api/child/verify", requireAuth, async (req, res) => {
   res.json({ child_id: child.id });
 });
 
+app.post("/api/child/regenerate-code", requireAuth, async (req, res) => {
+  const user = getAuthUser(req)!;
+  const resolved = await resolveChildId(req, user.id);
+  if (resolved.error || resolved.childId == null) {
+    return res.status(400).json({ error: resolved.error ?? "child_id required" });
+  }
+  const newCode = generateAccessCode();
+  const { error } = await supabaseAdmin
+    .from("child_profile")
+    .update({ access_code: newCode })
+    .eq("id", resolved.childId)
+    .eq("parent_id", user.id);
+
+  if (error) {
+    return res.status(500).json({ error: "Failed to update code" });
+  }
+  res.json({ access_code: newCode });
+});
+
 // Get predefined character options
 app.get("/api/characters", (req, res) => {
   const characters = [
@@ -975,7 +997,7 @@ app.get("/api/parent/children", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
   const { data: children } = await supabaseAdmin
     .from("child_profile")
-    .select("id, child_name, child_age, level, points, image_data")
+    .select("id, child_name, child_age, level, points, image_data, access_allowed")
     .eq("parent_id", user.id);
   res.json(children || []);
 });

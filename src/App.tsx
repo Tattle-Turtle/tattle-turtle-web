@@ -29,7 +29,8 @@ import {
   MicOff,
   Home,
   ChevronRight,
-  X
+  X,
+  LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import Markdown from 'react-markdown';
@@ -42,9 +43,9 @@ import { getSession, onAuthStateChange, supabase } from './lib/supabase';
 import { Link } from 'react-router-dom';
 import { ReactiveEyes } from './components/ReactiveEyes';
 import { NotFoundPage } from './components/NotFoundPage';
-import { ERROR_MESSAGES, LOADING_MESSAGES, getVoiceErrorMessage } from './lib/errorMessages';
+import { ERROR_MESSAGES, LOADING_MESSAGES, KID_COPY, getVoiceErrorMessage } from './lib/errorMessages';
 
-type PageMode = 'landing' | 'parent-auth' | 'setup' | 'child' | 'chat' | 'missions' | 'parent' | 'edit-character';
+type PageMode = 'landing' | 'parent-auth' | 'setup' | 'child' | 'chat' | 'missions' | 'parent' | 'edit-character' | 'child-login';
 type OverlayMode = 'incoming-call' | 'connecting-call' | 'on-call' | 'post-call-reward';
 type AppMode = PageMode | OverlayMode;
 
@@ -57,6 +58,7 @@ const PATH_TO_MODE: Record<string, AppMode> = {
   '/missions': 'missions',
   '/parent': 'parent',
   '/character': 'edit-character',
+  '/play': 'child-login',
 };
 
 const MODE_TO_PATH: Record<PageMode, string> = {
@@ -68,6 +70,7 @@ const MODE_TO_PATH: Record<PageMode, string> = {
   missions: '/missions',
   parent: '/parent',
   'edit-character': '/character',
+  'child-login': '/play',
 };
 
 const OVERLAY_MODES: OverlayMode[] = ['incoming-call', 'connecting-call', 'on-call', 'post-call-reward'];
@@ -89,7 +92,16 @@ const BREADCRUMB_LABELS: Record<PageMode, string> = {
   missions: 'Missions',
   parent: 'Parent portal',
   'edit-character': 'Character',
+  'child-login': 'Enter code',
 };
+
+const NAV_ITEMS: { path: string; label: string; mode: PageMode; Icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
+  { path: '/home', label: 'Home', mode: 'child', Icon: Home },
+  { path: '/chat', label: 'Chat', mode: 'chat', Icon: MessageCircle },
+  { path: '/missions', label: 'Missions', mode: 'missions', Icon: Star },
+  { path: '/parent', label: 'Grown-ups', mode: 'parent', Icon: ShieldCheck },
+  { path: '/character', label: 'Character', mode: 'edit-character', Icon: User },
+];
 
 function AppNav({ routeMode }: { routeMode: PageMode }) {
   const crumbs: { path: string; label: string }[] = [{ path: '/home', label: 'Home' }];
@@ -100,29 +112,64 @@ function AppNav({ routeMode }: { routeMode: PageMode }) {
   }
 
   return (
-    <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-white/95 backdrop-blur-sm border-b border-emerald-100/80 text-sm font-medium text-slate-600">
-      <nav className="max-w-6xl mx-auto w-full flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          {crumbs.map((c, i) => (
-            <span key={c.path} className="flex items-center gap-2">
-              {i > 0 && <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />}
-              {i === crumbs.length - 1 ? (
-                <span className="text-emerald-800 font-bold">{c.label}</span>
-              ) : (
-                <Link to={c.path} className="text-emerald-600 hover:underline">{c.label}</Link>
+    <>
+      {/* Desktop: top bar */}
+      <div className="hidden md:flex items-center gap-2 px-4 py-2 bg-white/95 backdrop-blur-sm border-b border-emerald-100/80 text-sm font-medium text-slate-600">
+        <nav className="max-w-6xl mx-auto w-full flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            {crumbs.map((c, i) => (
+              <span key={c.path} className="flex items-center gap-2">
+                {i > 0 && <ChevronRight className="w-4 h-4 text-slate-300 shrink-0" />}
+                {i === crumbs.length - 1 ? (
+                  <span className="text-emerald-800 font-bold">{c.label}</span>
+                ) : (
+                  <Link to={c.path} className="text-emerald-600 hover:underline">{c.label}</Link>
+                )}
+              </span>
+            ))}
+          </div>
+          <div className="flex items-center gap-4">
+            {NAV_ITEMS.map(({ path, label, mode, Icon }) => (
+              <Link
+                key={path}
+                to={path}
+                className={cn(
+                  'flex items-center gap-1.5 hover:text-emerald-700',
+                  routeMode === mode && 'font-bold text-emerald-700'
+                )}
+              >
+                <Icon size={18} />
+                {label}
+              </Link>
+            ))}
+          </div>
+        </nav>
+      </div>
+
+      {/* Mobile: fixed bottom nav — kid-friendly 44px+ touch targets, clear symbols + short labels (Raw.Studio, Ramotion) */}
+      <nav
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 bg-white/98 backdrop-blur-sm border-t-2 border-emerald-200 shadow-[0_-4px_20px_rgba(5,150,105,0.08)] pb-[env(safe-area-inset-bottom)]"
+        aria-label="Main navigation"
+      >
+        <div className="flex items-stretch justify-around max-w-2xl mx-auto">
+          {NAV_ITEMS.map(({ path, label, mode, Icon }) => (
+            <Link
+              key={path}
+              to={path}
+              className={cn(
+                'touch-target flex flex-col items-center justify-center flex-1 min-w-0 py-4 px-2 text-xs font-bold transition-colors rounded-lg mx-0.5 my-1',
+                routeMode === mode
+                  ? 'text-emerald-600 bg-emerald-50/90'
+                  : 'text-slate-500 hover:text-emerald-600 hover:bg-emerald-50/50 active:bg-emerald-100/50'
               )}
-            </span>
+            >
+              <Icon size={28} strokeWidth={2.5} className="mb-1 shrink-0" aria-hidden />
+              <span className="truncate w-full text-center leading-tight">{label}</span>
+            </Link>
           ))}
         </div>
-        <div className="flex items-center gap-4">
-          <Link to="/home" className={cn(routeMode === 'child' && 'font-bold text-emerald-700')}>Home</Link>
-          <Link to="/chat" className={cn(routeMode === 'chat' && 'font-bold text-emerald-700')}>Chat</Link>
-          <Link to="/missions" className={cn(routeMode === 'missions' && 'font-bold text-emerald-700')}>Missions</Link>
-          <Link to="/parent" className={cn(routeMode === 'parent' && 'font-bold text-emerald-700')}>Parent</Link>
-          <Link to="/character" className={cn(routeMode === 'edit-character' && 'font-bold text-emerald-700')}>Character</Link>
-        </div>
       </nav>
-    </div>
+    </>
   );
 }
 
@@ -186,6 +233,7 @@ type ChildSummary = {
   level: number;
   points: number;
   image_data?: string;
+  access_allowed?: boolean;
 };
 
 export default function App() {
@@ -256,6 +304,17 @@ export default function App() {
   const [profileLoading, setProfileLoading] = useState(false);
   const [missionsLoading, setMissionsLoading] = useState(false);
   const [parentDataLoading, setParentDataLoading] = useState(false);
+  const [showChildCodeReveal, setShowChildCodeReveal] = useState(false);
+  const [childCodeReveal, setChildCodeReveal] = useState('');
+  const [childLoginError, setChildLoginError] = useState('');
+  const [childLoginCode, setChildLoginCode] = useState('');
+  const [childLoginLoading, setChildLoginLoading] = useState(false);
+  const [regenerateCodeResult, setRegenerateCodeResult] = useState<string | null>(null);
+  const [editCharacterData, setEditCharacterData] = useState({
+    character_name: 'Shelly',
+    character_type: 'Turtle',
+    color: 'Emerald'
+  });
 
   // Call timer
   const callTimer = useCallTimer();
@@ -313,6 +372,16 @@ export default function App() {
       fetchParentData();
     }
   }, [mode]);
+
+  useEffect(() => {
+    if (mode === 'edit-character' && profile) {
+      setEditCharacterData({
+        character_name: profile.character_name || 'Shelly',
+        character_type: profile.character_type || 'Turtle',
+        color: profile.color || 'Emerald'
+      });
+    }
+  }, [mode, profile?.id, profile?.character_name, profile?.character_type, profile?.color]);
 
   useEffect(() => {
     if (selectedChildId != null && typeof localStorage !== 'undefined') {
@@ -488,6 +557,8 @@ export default function App() {
 
   const handleSetup = async () => {
     setIsCreating(true);
+    setShowChildCodeReveal(false);
+    setChildCodeReveal('');
     try {
       const res = await fetch('/api/profile', {
         method: 'POST',
@@ -500,7 +571,12 @@ export default function App() {
       const data = await res.json();
       setProfile(data);
       if (data?.id) setSelectedChildId(data.id);
-      goTo('child');
+      if (data?.access_code) {
+        setChildCodeReveal(data.access_code);
+        setShowChildCodeReveal(true);
+      } else {
+        goTo('child');
+      }
     } catch (err) {
       console.error(err);
     } finally {
@@ -693,27 +769,27 @@ export default function App() {
 
           <div className="grid grid-cols-1 gap-4 w-full">
             <motion.button 
-              whileHover={{ scale: 1.05 }}
-              whileTap={{ scale: 0.95 }}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
               onClick={() => {
                 if (profile) goTo('child');
                 else if (session) goTo('setup');
                 else goTo('parent-auth');
               }}
-              className="bg-emerald-500 hover:bg-emerald-600 text-white font-black py-8 px-8 rounded-3xl shadow-[0_8px_0_rgb(5,150,105)] transition-all flex items-center justify-center gap-4 text-2xl"
+              className="touch-target-lg bg-emerald-500 hover:bg-emerald-600 text-white font-black py-6 px-8 rounded-3xl shadow-[0_8px_0_rgb(5,150,105)] transition-all flex items-center justify-center gap-4 text-2xl min-h-[56px]"
             >
               <MessageCircle size={32} strokeWidth={3} />
-              {profile ? "LET'S PLAY!" : "GET STARTED"}
+              {profile ? "Let's play!" : "Get started"}
             </motion.button>
             <button 
               onClick={() => session ? goTo('parent') : goTo('parent-auth')}
-              className="bg-white hover:bg-emerald-50 text-emerald-700 font-bold py-4 px-8 rounded-2xl border-2 border-emerald-200 shadow-sm transition-all flex items-center justify-center gap-3"
+              className="touch-target bg-white hover:bg-emerald-50 text-emerald-700 font-bold py-4 px-8 rounded-2xl border-2 border-emerald-200 shadow-sm transition-all flex items-center justify-center gap-3 min-h-[48px]"
             >
-              <ShieldCheck size={20} />
-              Parents Only
+              <ShieldCheck size={22} />
+              Grown-ups only
             </button>
           </div>
-          <p className="text-center mt-6">
+          <p className="text-center mt-6 space-x-4">
             <button
               type="button"
               onClick={() => goTo('parent-auth')}
@@ -721,6 +797,15 @@ export default function App() {
             >
               Log in or sign up as parent
             </button>
+            {session && (
+              <button
+                type="button"
+                onClick={() => goTo('child-login')}
+                className="text-sm text-emerald-600 hover:underline"
+              >
+                I have a code
+              </button>
+            )}
           </p>
         </motion.div>
       </div>
@@ -792,8 +877,48 @@ export default function App() {
   }
 
   if (mode === 'setup') {
+    if (showChildCodeReveal && childCodeReveal) {
+      return (
+        <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
+          <motion.div
+            initial={{ scale: 0.9, opacity: 0 }}
+            animate={{ scale: 1, opacity: 1 }}
+            className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-md space-y-6 text-center"
+          >
+            <h2 className="text-2xl font-black text-emerald-900">Your child&apos;s code</h2>
+            <p className="text-emerald-700">They can use this to open Brave Call and play.</p>
+            <div className="bg-emerald-100 py-6 px-8 rounded-3xl border-4 border-emerald-200">
+              <p className="text-4xl font-black text-emerald-900 tracking-[0.5em]">{childCodeReveal}</p>
+            </div>
+            <div className="flex gap-3">
+              <button
+                type="button"
+                onClick={() => {
+                  navigator.clipboard?.writeText(childCodeReveal);
+                }}
+                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-4 rounded-2xl"
+              >
+                Copy
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowChildCodeReveal(false);
+                  setChildCodeReveal('');
+                  goTo('child');
+                }}
+                className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-black py-4 rounded-2xl shadow-[0_4px_0_rgb(5,150,105)]"
+              >
+                Go to Play
+              </button>
+            </div>
+            <p className="text-sm text-slate-500">You can change or turn off this code anytime in Parent Portal.</p>
+          </motion.div>
+        </div>
+      );
+    }
     return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
+      <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
         <div className="absolute top-0 left-0 right-0 z-10">
           <AppNav routeMode="setup" />
         </div>
@@ -949,7 +1074,7 @@ export default function App() {
 
   if (mode === 'child') {
     return (
-      <div className="min-h-screen bg-gradient-to-b from-sky-300 via-emerald-200 to-emerald-300 flex flex-col font-sans lg:max-w-full xl:max-w-7xl mx-auto lg:shadow-2xl relative overflow-hidden">
+      <div className="min-h-screen pb-24 md:pb-0 bg-gradient-to-b from-sky-300 via-emerald-200 to-emerald-300 flex flex-col font-sans lg:max-w-full xl:max-w-7xl mx-auto lg:shadow-2xl relative overflow-hidden">
         <AppNav routeMode="child" />
         {/* Decorative habitat elements */}
         <div className="absolute inset-0 pointer-events-none">
@@ -1003,23 +1128,23 @@ export default function App() {
               <div className="flex items-center gap-3">
                 <span className="text-4xl">{pendingCallReward.emoji}</span>
                 <div>
-                  <p className="font-black text-amber-900 text-lg">You have a reward to collect!</p>
-                  <p className="text-amber-800 font-bold">+{pendingCallReward.points} points</p>
+                  <p className="font-black text-amber-900 text-lg">{KID_COPY.rewardCollect}</p>
+                  <p className="text-amber-800 font-bold">+{pendingCallReward.points} {KID_COPY.rewardPoints}</p>
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex gap-2 items-center">
                 <button
                   onClick={() => claimCallReward(pendingCallReward)}
-                  className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-5 py-2 rounded-xl shadow-lg"
+                  className="touch-target bg-emerald-500 hover:bg-emerald-600 text-white font-bold px-6 py-3 rounded-xl shadow-lg min-h-[44px]"
                 >
-                  Collect
+                  {KID_COPY.collect}
                 </button>
                 <button
                   onClick={() => setPendingCallReward(null)}
-                  className="p-2 rounded-full bg-white/80 hover:bg-white transition-colors"
+                  className="touch-target p-3 rounded-full bg-white/80 hover:bg-white transition-colors"
                   aria-label="Dismiss"
                 >
-                  <X size={20} className="text-slate-600" />
+                  <X size={22} className="text-slate-600" />
                 </button>
               </div>
             </motion.div>
@@ -1029,13 +1154,29 @@ export default function App() {
         {/* Header - minimal overlay */}
         <header className="relative z-20 p-4 md:p-6 lg:p-8">
           <div className="flex items-center justify-between max-w-6xl mx-auto">
-            <button
-              onClick={() => goTo('parent')}
-              className="bg-white/80 backdrop-blur-sm p-2 px-4 md:p-3 md:px-5 lg:p-4 lg:px-6 rounded-2xl shadow-lg hover:bg-white transition-colors flex items-center gap-2"
-            >
-              <ShieldCheck className="text-emerald-600" size={20} />
-              <span className="text-xs md:text-sm lg:text-base font-bold text-emerald-700">Parent</span>
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => goTo('parent')}
+                className="touch-target bg-white/80 backdrop-blur-sm p-3 px-5 md:p-4 md:px-6 rounded-2xl shadow-lg hover:bg-white transition-colors flex items-center gap-2"
+                aria-label="Grown-ups only"
+              >
+                <ShieldCheck className="text-emerald-600" size={22} />
+                <span className="text-xs md:text-sm lg:text-base font-bold text-emerald-700">Grown-ups</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setProfile(null);
+                  setSelectedChildId(null);
+                  goTo('child-login');
+                }}
+                className="touch-target bg-white/80 backdrop-blur-sm p-3 px-4 md:p-4 md:px-5 rounded-2xl shadow-lg hover:bg-white transition-colors flex items-center gap-2"
+                aria-label="Log out"
+              >
+                <LogOut className="text-slate-600" size={20} />
+                <span className="text-xs md:text-sm font-bold text-slate-600">Log out</span>
+              </button>
+            </div>
 
             <div className="flex items-center gap-2 md:gap-3 bg-white/80 backdrop-blur-sm px-4 py-2 md:px-6 md:py-3 lg:px-8 lg:py-4 rounded-full shadow-lg">
               <div className="text-right">
@@ -1133,7 +1274,7 @@ export default function App() {
 
   if (mode === 'chat') {
     return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl relative">
+      <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl relative">
         <AppNav routeMode="chat" />
         <header className="bg-white p-4 flex items-center justify-between border-b-4 border-emerald-100 sticky top-0 z-20">
           <button onClick={() => goTo('child')} className="p-3 hover:bg-emerald-50 rounded-2xl transition-colors">
@@ -1187,8 +1328,9 @@ export default function App() {
             <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }} className="absolute bottom-24 left-4 right-4 bg-amber-400 text-amber-950 p-6 rounded-[32px] shadow-2xl z-50 border-4 border-white flex items-center gap-6">
               <div className="text-6xl bg-white p-4 rounded-3xl shadow-inner">{showBadgePopup.icon}</div>
               <div>
-                <h3 className="text-2xl font-black uppercase tracking-tight">Badge Earned!</h3>
+                <h3 className="text-2xl font-black uppercase tracking-tight">{KID_COPY.badgeTitle}</h3>
                 <p className="text-lg font-bold">{showBadgePopup.name}</p>
+                <p className="text-emerald-700 font-bold text-sm mt-1">{KID_COPY.badgeSubtitle}</p>
               </div>
             </motion.div>
           )}
@@ -1197,7 +1339,7 @@ export default function App() {
         <div className="p-4 bg-white border-t-4 border-emerald-100">
           <div className="flex gap-3 bg-emerald-50 p-3 rounded-[32px] border-4 border-emerald-100 focus-within:border-emerald-300 transition-all shadow-inner">
             <input value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSend()} placeholder="Type here..." className="flex-1 bg-transparent px-4 py-2 outline-none text-emerald-900 placeholder:text-emerald-300 text-xl font-bold" />
-            <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={handleSend} disabled={isLoading} className="bg-emerald-500 hover:bg-emerald-600 text-white p-4 rounded-2xl shadow-[0_4px_0_rgb(5,150,105)] disabled:opacity-50"><Send size={28} strokeWidth={3} /></motion.button>
+            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleSend} disabled={isLoading} className="touch-target bg-emerald-500 hover:bg-emerald-600 text-white p-4 rounded-2xl shadow-[0_4px_0_rgb(5,150,105)] disabled:opacity-50 min-h-[44px] min-w-[44px]"><Send size={28} strokeWidth={3} /></motion.button>
           </div>
         </div>
       </div>
@@ -1206,7 +1348,7 @@ export default function App() {
 
   if (mode === 'missions') {
     return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl">
+      <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl">
         <AppNav routeMode="missions" />
         <header className="bg-white p-6 border-b-4 border-emerald-100 flex items-center gap-4">
           <button onClick={() => goTo('child')} className="p-2 hover:bg-emerald-50 rounded-xl">
@@ -1258,9 +1400,83 @@ export default function App() {
     );
   }
 
+  if (mode === 'child-login') {
+    const handleChildLogin = async (e: React.FormEvent) => {
+      e.preventDefault();
+      setChildLoginError('');
+      if (!childLoginCode.trim()) {
+        setChildLoginError('Enter your code');
+        return;
+      }
+      if (!session) {
+        setChildLoginError(ERROR_MESSAGES.auth.pleaseLogIn);
+        return;
+      }
+      setChildLoginLoading(true);
+      try {
+        const res = await fetch('/api/child/verify', {
+          method: 'POST',
+          headers: apiHeaders(),
+          body: JSON.stringify({ code: childLoginCode.trim() }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          setChildLoginError(data?.error || ERROR_MESSAGES.generic.tryAgain);
+          return;
+        }
+        const cid = data.child_id;
+        setSelectedChildId(cid);
+        const profileRes = await fetch('/api/profile', { headers: apiHeaders(cid) });
+        const profileData = profileRes.ok ? await profileRes.json() : null;
+        if (profileData) {
+          setProfile(profileData);
+          goTo('child');
+        } else {
+          setChildLoginError(ERROR_MESSAGES.generic.loadFailed);
+        }
+      } catch {
+        setChildLoginError(ERROR_MESSAGES.network.generic);
+      } finally {
+        setChildLoginLoading(false);
+      }
+    };
+    return (
+      <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
+        <div className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-sm space-y-6">
+          <div className="flex justify-center">
+            <div className="bg-emerald-100 p-6 rounded-full">
+              <Turtle size={64} className="text-emerald-600" />
+            </div>
+          </div>
+          <h2 className="text-2xl font-black text-emerald-900 text-center">Enter your code</h2>
+          <p className="text-emerald-700 text-center text-sm">Use the code your parent gave you to play.</p>
+          <form onSubmit={handleChildLogin} className="space-y-4">
+            <input
+              type="text"
+              inputMode="numeric"
+              placeholder="Code"
+              value={childLoginCode}
+              onChange={(e) => setChildLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+              className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-4 text-emerald-900 text-center text-2xl font-black tracking-[0.3em]"
+              maxLength={6}
+              autoFocus
+            />
+            {childLoginError && <p className="text-sm text-rose-600 text-center">{childLoginError}</p>}
+            <button type="submit" disabled={childLoginLoading} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-4 rounded-xl disabled:opacity-50">
+              {childLoginLoading ? LOADING_MESSAGES.auth : 'Play'}
+            </button>
+          </form>
+          <button type="button" onClick={() => goTo('landing')} className="w-full text-sm text-slate-500 hover:underline">
+            Back
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (mode === 'parent') {
     return (
-      <div className="min-h-screen bg-slate-50 flex flex-col font-sans">
+      <div className="min-h-screen pb-24 md:pb-0 bg-slate-50 flex flex-col font-sans">
         <AppNav routeMode="parent" />
         <header className="bg-white p-6 border-b border-slate-200 flex items-center justify-between sticky top-0 z-20">
           <div className="flex items-center gap-4">
@@ -1274,12 +1490,25 @@ export default function App() {
               )}
             </div>
           </div>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-3 flex-wrap">
             <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-full text-sm font-medium">
               <ShieldCheck size={16} />
               Weekly summary
             </div>
             <button type="button" onClick={() => goTo('setup')} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold">Add Child</button>
+            <button
+              type="button"
+              onClick={async () => {
+                await supabase?.auth.signOut();
+                setSession(null);
+                setProfile(null);
+                setSelectedChildId(null);
+                goTo('landing');
+              }}
+              className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-xl text-sm font-bold border border-slate-200"
+            >
+              Log out
+            </button>
           </div>
         </header>
 
@@ -1305,26 +1534,71 @@ export default function App() {
           <aside className="lg:col-span-3 space-y-4">
             <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest px-2">Your Children</h2>
             {children.map(child => (
-              <button 
-                key={child.id}
-                onClick={() => setSelectedChildId(child.id)}
-                className={cn(
-                  "w-full p-4 rounded-2xl flex items-center gap-3 transition-all border-2",
-                  selectedChildId === child.id 
-                    ? "bg-white border-emerald-500 shadow-md" 
-                    : "bg-slate-100 border-transparent hover:bg-slate-200"
-                )}
-              >
-                {child.image_data ? (
-                  <img src={child.image_data} className="w-10 h-10 rounded-full object-cover" />
-                ) : (
-                  <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center">🐢</div>
-                )}
-                <div className="text-left">
-                  <p className="font-bold text-slate-900">{child.child_name}</p>
-                  <p className="text-xs text-slate-500">{child.points} brave moments • {child.child_age} yrs</p>
+              <div key={child.id} className="space-y-2">
+                <button 
+                  onClick={() => setSelectedChildId(child.id)}
+                  className={cn(
+                    "w-full p-4 rounded-2xl flex items-center gap-3 transition-all border-2 text-left",
+                    selectedChildId === child.id 
+                      ? "bg-white border-emerald-500 shadow-md" 
+                      : "bg-slate-100 border-transparent hover:bg-slate-200"
+                  )}
+                >
+                  {child.image_data ? (
+                    <img src={child.image_data} className="w-10 h-10 rounded-full object-cover" alt="" />
+                  ) : (
+                    <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center">🐢</div>
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className="font-bold text-slate-900">{child.child_name}</p>
+                    <p className="text-xs text-slate-500">{child.points} brave moments • {child.child_age} yrs</p>
+                  </div>
+                </button>
+                <div className="flex flex-wrap items-center gap-2 pl-1">
+                  <span className="text-xs font-medium text-slate-500">Access:</span>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      fetch('/api/profile', {
+                        method: 'PUT',
+                        headers: apiHeaders(child.id),
+                        body: JSON.stringify({ access_allowed: !(child.access_allowed !== false) }),
+                      }).then(() => fetchParentData());
+                    }}
+                    className={cn(
+                      "text-xs font-bold px-2 py-1 rounded-lg",
+                      child.access_allowed !== false ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
+                    )}
+                  >
+                    {child.access_allowed !== false ? 'Allowed' : 'Denied'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setRegenerateCodeResult(null);
+                      fetch('/api/child/regenerate-code', {
+                        method: 'POST',
+                        headers: apiHeaders(child.id),
+                      })
+                        .then((r) => r.json())
+                        .then((data) => data?.access_code && setRegenerateCodeResult(data.access_code))
+                        .then(() => fetchParentData());
+                    }}
+                    className="text-xs font-bold text-slate-600 hover:text-slate-900 underline"
+                  >
+                    Change code
+                  </button>
                 </div>
-              </button>
+                {regenerateCodeResult !== null && selectedChildId === child.id && (
+                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
+                    <p className="text-xs font-bold text-amber-800">New code: <span className="tracking-widest">{regenerateCodeResult}</span></p>
+                    <button type="button" onClick={() => navigator.clipboard?.writeText(regenerateCodeResult)} className="text-xs text-amber-700 underline mt-1">Copy</button>
+                    <button type="button" onClick={() => setRegenerateCodeResult(null)} className="ml-2 text-xs text-slate-600">Close</button>
+                  </div>
+                )}
+              </div>
             ))}
           </aside>
 
@@ -1917,7 +2191,7 @@ export default function App() {
                 whileTap={{ scale: 0.9 }}
                 onClick={handleSendOnCall}
                 disabled={isLoading}
-                className="bg-emerald-500 hover:bg-emerald-600 text-white p-5 rounded-2xl shadow-xl disabled:opacity-50"
+                className="touch-target bg-emerald-500 hover:bg-emerald-600 text-white p-5 rounded-2xl shadow-xl disabled:opacity-50 min-h-[48px] min-w-[48px]"
               >
                 <Send size={28} strokeWidth={3} />
               </motion.button>
@@ -1970,8 +2244,9 @@ export default function App() {
             >
               <div className="text-6xl bg-white p-4 rounded-3xl shadow-inner">{showBadgePopup.icon}</div>
               <div>
-                <h3 className="text-2xl font-black uppercase tracking-tight">Badge Earned!</h3>
+                <h3 className="text-2xl font-black uppercase tracking-tight">{KID_COPY.badgeTitle}</h3>
                 <p className="text-lg font-bold">{showBadgePopup.name}</p>
+                <p className="text-emerald-700 font-bold text-sm mt-1">{KID_COPY.badgeSubtitle}</p>
               </div>
             </motion.div>
           )}
@@ -2039,7 +2314,7 @@ export default function App() {
             transition={{ repeat: Infinity, duration: 2 }}
           >
             <h1 className="text-6xl font-black text-white mb-4">
-              Great Call! 🎉
+              {KID_COPY.greatCall} 🎉
             </h1>
             <p className="text-2xl text-amber-100 font-bold">
               {profile?.character_name} wants to thank you!
@@ -2107,17 +2382,17 @@ export default function App() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={handleCollectNow}
-              className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-2xl py-5 px-8 rounded-full shadow-2xl"
+              className="touch-target-lg w-full bg-emerald-500 hover:bg-emerald-600 text-white font-black text-2xl py-5 px-8 rounded-full shadow-2xl min-h-[52px]"
             >
-              Collect now
+              {KID_COPY.collect} now
             </motion.button>
             <motion.button
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={handleCollectLater}
-              className="w-full bg-white/90 hover:bg-white text-slate-700 font-bold text-xl py-4 px-6 rounded-full shadow-lg border-2 border-amber-200"
+              className="touch-target w-full bg-white/90 hover:bg-white text-slate-700 font-bold text-xl py-4 px-6 rounded-full shadow-lg border-2 border-amber-200 min-h-[48px]"
             >
-              Collect later
+              {KID_COPY.collectLater}
             </motion.button>
           </div>
 
@@ -2131,13 +2406,8 @@ export default function App() {
 
   // Edit Character Screen (Kid-Friendly)
   if (mode === 'edit-character') {
-    const [editData, setEditData] = useState({
-      character_name: profile?.character_name || 'Shelly',
-      character_type: profile?.character_type || 'Turtle',
-      color: profile?.color || 'Emerald'
-    });
     const handleSaveCharacter = async () => {
-      if (!editData.character_name.trim()) return;
+      if (!editCharacterData.character_name.trim()) return;
 
       setIsCreating(true);
 
@@ -2147,9 +2417,9 @@ export default function App() {
           method: 'POST',
           headers: apiHeaders(profile?.id),
           body: JSON.stringify({
-            characterName: editData.character_name,
-            characterType: editData.character_type,
-            color: editData.color,
+            characterName: editCharacterData.character_name,
+            characterType: editCharacterData.character_type,
+            color: editCharacterData.color,
           }),
         });
 
@@ -2159,9 +2429,9 @@ export default function App() {
           method: 'PUT',
           headers: apiHeaders(profile?.id),
           body: JSON.stringify({
-            character_name: editData.character_name,
-            character_type: editData.character_type,
-            color: editData.color,
+            character_name: editCharacterData.character_name,
+            character_type: editCharacterData.character_type,
+            color: editCharacterData.color,
             image_data: imageData.image,
           }),
         });
@@ -2179,7 +2449,7 @@ export default function App() {
     };
 
     return (
-      <div className="min-h-screen bg-gradient-to-b from-purple-300 via-pink-200 to-orange-200 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl relative overflow-hidden">
+      <div className="min-h-screen pb-24 md:pb-0 bg-gradient-to-b from-purple-300 via-pink-200 to-orange-200 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl relative overflow-hidden">
         <AppNav routeMode="edit-character" />
         {/* Decorative elements */}
         <div className="absolute inset-0 pointer-events-none">
@@ -2272,8 +2542,8 @@ export default function App() {
               </label>
               <input
                 type="text"
-                value={editData.character_name}
-                onChange={(e) => setEditData({ ...editData, character_name: e.target.value })}
+                value={editCharacterData.character_name}
+                onChange={(e) => setEditCharacterData({ ...editCharacterData, character_name: e.target.value })}
                 className="w-full bg-purple-50 border-4 border-purple-200 rounded-2xl px-6 py-4 text-2xl font-bold text-purple-900 outline-none focus:border-purple-400 transition-all"
                 placeholder="What should we call them?"
               />
@@ -2298,10 +2568,10 @@ export default function App() {
                     key={type}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => setEditData({ ...editData, character_type: type })}
+                    onClick={() => setEditCharacterData({ ...editCharacterData, character_type: type })}
                     className={cn(
                       "py-4 px-2 rounded-2xl font-bold border-4 transition-all",
-                      editData.character_type === type
+                      editCharacterData.character_type === type
                         ? "bg-purple-500 text-white border-purple-600 shadow-lg scale-105"
                         : "bg-purple-50 text-purple-700 border-purple-200 hover:border-purple-300"
                     )}
@@ -2332,10 +2602,10 @@ export default function App() {
                     key={name}
                     whileHover={{ scale: 1.05 }}
                     whileTap={{ scale: 0.95 }}
-                    onClick={() => setEditData({ ...editData, color: name })}
+                    onClick={() => setEditCharacterData({ ...editCharacterData, color: name })}
                     className={cn(
                       "py-4 rounded-2xl font-bold border-4 transition-all",
-                      editData.color === name
+                      editCharacterData.color === name
                         ? `${color} text-white ${border} shadow-lg scale-105`
                         : "bg-white border-slate-200 hover:border-slate-300"
                     )}
@@ -2354,7 +2624,7 @@ export default function App() {
               whileHover={{ scale: 1.02 }}
               whileTap={{ scale: 0.98 }}
               onClick={handleSaveCharacter}
-              disabled={!editData.character_name.trim()}
+              disabled={!editCharacterData.character_name.trim()}
               className="w-full bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white font-black text-2xl py-6 rounded-full shadow-[0_8px_0_rgb(147,51,234)] active:shadow-[0_4px_0_rgb(147,51,234)] active:translate-y-1 disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Save My Friend! ✨
@@ -2365,5 +2635,19 @@ export default function App() {
     );
   }
 
-  return null;
+  // Fallback: unknown mode or edge case — never show a blank page
+  return (
+    <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
+      <div className="bg-white p-8 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 max-w-sm text-center space-y-4">
+        <Turtle size={56} className="text-emerald-500 mx-auto" />
+        <p className="text-emerald-800 font-bold">Let&apos;s get you back!</p>
+        <div className="flex flex-col gap-2">
+          <Link to="/home" className="bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-3 px-6 rounded-2xl">
+            Go to Home
+          </Link>
+          <Link to="/" className="text-emerald-600 hover:underline text-sm">Start over</Link>
+        </div>
+      </div>
+    </div>
+  );
 }

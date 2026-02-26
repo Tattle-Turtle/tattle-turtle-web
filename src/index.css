@@ -1,5 +1,17 @@
 @import "tailwindcss";
 
+/* Kid-friendly UX: minimum 44px touch targets (Ramotion, Raw.Studio, Medium). */
+@layer components {
+  .touch-target {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  .touch-target-lg {
+    min-height: 48px;
+    min-width: 48px;
+  }
+}
+
 @layer base {
   .markdown-body {
     @apply text-inherit;
