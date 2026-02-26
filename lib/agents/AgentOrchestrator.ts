@@ -15,6 +15,7 @@ import {
 } from './SpecialistAgents';
 import { FEATURE_FLAGS } from './config';
 import { AgentExecutionResult, ConversationContext } from './types';
+import type { AIProvider } from './BaseAgent';
 
 export class AgentOrchestrator {
   private safetyAgent: SafetyAgent;
@@ -26,16 +27,16 @@ export class AgentOrchestrator {
   private problemSolvingAgent: ProblemSolvingAgent;
   private validatorAgent: ValidatorAgent;
 
-  constructor(apiKey: string) {
-    // Initialize all agents
-    this.safetyAgent = new SafetyAgent(apiKey);
-    this.routingAgent = new RoutingAgent(apiKey);
-    this.conversationalAgent = new ConversationalAgent(apiKey);
-    this.educationalAgent = new EducationalAgent(apiKey);
-    this.emotionalAgent = new EmotionalAgent(apiKey);
-    this.creativeAgent = new CreativeAgent(apiKey);
-    this.problemSolvingAgent = new ProblemSolvingAgent(apiKey);
-    this.validatorAgent = new ValidatorAgent(apiKey);
+  constructor(apiKey: string, provider: AIProvider = 'google') {
+    // Initialize all agents with same provider (OpenAI or Google)
+    this.safetyAgent = new SafetyAgent(apiKey, provider);
+    this.routingAgent = new RoutingAgent(apiKey, provider);
+    this.conversationalAgent = new ConversationalAgent(apiKey, provider);
+    this.educationalAgent = new EducationalAgent(apiKey, provider);
+    this.emotionalAgent = new EmotionalAgent(apiKey, provider);
+    this.creativeAgent = new CreativeAgent(apiKey, provider);
+    this.problemSolvingAgent = new ProblemSolvingAgent(apiKey, provider);
+    this.validatorAgent = new ValidatorAgent(apiKey, provider);
   }
 
   /**

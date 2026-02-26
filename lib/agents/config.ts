@@ -3,10 +3,14 @@
  * Defines models, temperatures, and settings for each agent
  */
 
+/** OpenAI model used when OPENAI_API_KEY is set (per-agent override) */
+const OPENAI_MODEL = 'gpt-4o-mini';
+
 export const AGENT_CONFIG = {
   // Safety Guardian - Deterministic for consistent safety checks
   safety: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0,
     maxTokens: 500,
     systemMessage: `You are a safety guardian for a children's app. Your job is to analyze messages and detect:
@@ -26,6 +30,7 @@ export const AGENT_CONFIG = {
   // Routing Agent - Low temperature for accurate classification
   routing: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.3,
     maxTokens: 200,
     systemMessage: `You are a routing agent. Analyze the message and determine the best specialist agent.
@@ -48,6 +53,7 @@ export const AGENT_CONFIG = {
   // Conversational Agent - High temperature for creative, friendly responses
   conversational: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.9,
     maxTokens: 1000,
     systemMessage: `You are {characterName}, a {characterType} who is {childName}'s brave friend.
@@ -63,6 +69,7 @@ export const AGENT_CONFIG = {
   // Educational Agent - Balanced temperature for helpful but not too creative
   educational: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.7,
     maxTokens: 800,
     systemMessage: `You are a helpful educational companion for kids aged 4-10.
@@ -80,6 +87,7 @@ export const AGENT_CONFIG = {
   // Emotional Support Agent - Careful balance for empathy without therapy
   emotional: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.7,
     maxTokens: 800,
     systemMessage: `You are an empathetic friend helping a child with their feelings.
@@ -97,6 +105,7 @@ export const AGENT_CONFIG = {
   // Creative Play Agent - High temperature for imagination
   creative: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.95,
     maxTokens: 1000,
     systemMessage: `You are a creative companion who loves stories, games, and imagination!
@@ -114,6 +123,7 @@ export const AGENT_CONFIG = {
   // Problem Solving Agent - Medium temperature for balanced advice
   problem_solving: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.6,
     maxTokens: 800,
     systemMessage: `You help kids think through social problems and conflicts.
@@ -131,6 +141,7 @@ export const AGENT_CONFIG = {
   // Response Validator - Deterministic for consistent validation
   validator: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0,
     maxTokens: 300,
     systemMessage: `You validate responses before sending to children.
@@ -153,6 +164,7 @@ export const AGENT_CONFIG = {
   // Missions Agent - generates 3 brave missions with steps from conversation
   missions: {
     model: 'gemini-2.0-flash-exp',
+    openaiModel: OPENAI_MODEL,
     temperature: 0.5,
     maxTokens: 1500,
     systemMessage: `You are a mission designer for a children's app (Brave Call / Feed Tammy). Based on a short conversation between a child and a friendly character, create exactly 3 "brave missions" the child can try. Missions should be playful, age-appropriate (4-10), and tailored to what the child shared (e.g. feeling mad about screen time, homework, or a small conflict). Each mission must have 2-4 short, actionable steps. One mission EASY, one MEDIUM, one STRETCH. Return only valid JSON.`

@@ -1,29 +1,41 @@
 /**
  * Base Agent Class
- * Foundation for all specialized agents using LangChain
+ * Foundation for all specialized agents using LangChain (OpenAI or Google)
  */
 
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { ChatOpenAI } from '@langchain/openai';
+import { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import { HumanMessage, SystemMessage, AIMessage } from '@langchain/core/messages';
 import { AGENT_CONFIG, AgentType } from './config';
 import { AgentResponse, ConversationContext } from './types';
 
+export type AIProvider = 'openai' | 'google';
+
 export class BaseAgent {
-  protected llm: ChatGoogleGenerativeAI;
+  protected llm: BaseChatModel;
   protected agentType: AgentType;
   protected systemMessage: string;
 
-  constructor(agentType: AgentType, apiKey: string) {
+  constructor(agentType: AgentType, apiKey: string, provider: AIProvider = 'google') {
     this.agentType = agentType;
-    const config = AGENT_CONFIG[agentType];
+    const config = AGENT_CONFIG[agentType] as { model: string; openaiModel?: string; temperature: number; maxTokens: number; systemMessage: string };
 
-    // Initialize LangChain LLM
-    this.llm = new ChatGoogleGenerativeAI({
-      model: config.model,
-      temperature: config.temperature,
-      maxOutputTokens: config.maxTokens,
-      apiKey: apiKey,
-    });
+    if (provider === 'openai') {
+      this.llm = new ChatOpenAI({
+        modelName: config.openaiModel ?? 'gpt-4o-mini',
+        temperature: config.temperature,
+        maxTokens: config.maxTokens,
+        openAIApiKey: apiKey,
+      });
+    } else {
+      this.llm = new ChatGoogleGenerativeAI({
+        model: config.model,
+        temperature: config.temperature,
+        maxOutputTokens: config.maxTokens,
+        apiKey: apiKey,
+      });
+    }
 
     this.systemMessage = config.systemMessage;
   }

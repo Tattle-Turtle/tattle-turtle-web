@@ -22,6 +22,7 @@
     "@google/genai": "^1.29.0",
     "@langchain/core": "^1.1.28",
     "@langchain/google-genai": "^2.1.20",
+    "@langchain/openai": "^0.3.14",
     "@supabase/supabase-js": "^2.97.0",
     "@tailwindcss/vite": "^4.1.14",
     "@vitejs/plugin-react": "^5.0.4",
