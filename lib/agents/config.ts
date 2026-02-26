@@ -148,6 +148,14 @@ export const AGENT_CONFIG = {
       "issues": string[],
       "suggestedEdit": string (if not approved)
     }`
+  },
+
+  // Missions Agent - generates 3 brave missions with steps from conversation
+  missions: {
+    model: 'gemini-2.0-flash-exp',
+    temperature: 0.5,
+    maxTokens: 1500,
+    systemMessage: `You are a mission designer for a children's app (Brave Call / Feed Tammy). Based on a short conversation between a child and a friendly character, create exactly 3 "brave missions" the child can try. Missions should be playful, age-appropriate (4-10), and tailored to what the child shared (e.g. feeling mad about screen time, homework, or a small conflict). Each mission must have 2-4 short, actionable steps. One mission EASY, one MEDIUM, one STRETCH. Return only valid JSON.`
   }
 };
 
@@ -157,8 +165,13 @@ export const FEATURE_FLAGS = {
   ENABLE_SAFETY_AGENT: true,
   ENABLE_ROUTING: true,
   ENABLE_RESPONSE_VALIDATION: true,
-  LOG_AGENT_DECISIONS: true
+  LOG_AGENT_DECISIONS: true,
+  ENABLE_SMS_ESCALATION: process.env.ENABLE_SMS_ESCALATION !== 'false',
 };
+
+// Escalation: Tier 2 in-app message (suggest grown-up)
+export const ESCALATION_TIER2_MESSAGE =
+  'This feels like a big one. Would you like to talk to a grown-up too?';
 
 // Agent types
 export type AgentType =
@@ -169,7 +182,8 @@ export type AgentType =
   | 'emotional'
   | 'creative'
   | 'problem_solving'
-  | 'validator';
+  | 'validator'
+  | 'missions';
 
 // Safety levels
 export type SafetyLevel = 'none' | 'low' | 'medium' | 'high' | 'critical';

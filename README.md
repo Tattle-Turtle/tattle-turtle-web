@@ -93,8 +93,9 @@ SUPABASE_ANON_KEY="eyJ..."       # From https://app.supabase.com/
 
 In your Supabase dashboard:
 1. Click **SQL Editor**
-2. Copy the contents of `supabase-schema.sql`
-3. Paste and click **Run**
+2. Copy the contents of `supabase-schema.sql` and run it (creates `profiles`, `child_profile`, `messages` with `child_id`, etc.).
+3. If you already had an older database, also run `supabase-migration-app-structure.sql` so the app has the `profiles` table and `messages.child_id` (and `child_profile.access_code` / `access_allowed`).
+4. In **Authentication → Providers**, enable **Email** so parent sign-in/sign-up works.
 
 **4️⃣ Check everything is ready**
 ```bash

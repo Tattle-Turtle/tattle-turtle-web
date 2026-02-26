@@ -6,6 +6,8 @@
 export { AgentOrchestrator } from './AgentOrchestrator';
 export { SafetyAgent } from './SafetyAgent';
 export { RoutingAgent } from './RoutingAgent';
+export { evaluateEscalation } from './EscalationAgent';
+export { MissionsAgent } from './MissionsAgent';
 export {
   ConversationalAgent,
   EducationalAgent,

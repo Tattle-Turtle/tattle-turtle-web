@@ -73,3 +73,19 @@ export interface ParentAlert {
   action: AgentAction;
   reviewed: boolean;
 }
+
+// Escalation tier (0 = normal, 3 = parent SMS)
+export type EscalationTier = 0 | 1 | 2 | 3;
+
+export type EscalationResponseShape =
+  | 'normal'
+  | 'longer_empathy'
+  | 'add_grown_up_suggestion'
+  | 'calm_plus_alert';
+
+export interface EscalationResult {
+  tier: EscalationTier;
+  responseShape: EscalationResponseShape;
+  reason?: string;
+  messageToParent?: string;
+}

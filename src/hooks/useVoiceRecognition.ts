@@ -21,6 +21,12 @@ export function useVoiceRecognition(options: VoiceRecognitionOptions = {}) {
 
   const recognitionRef = useRef<any>(null);
   const silenceTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const stoppedByNoSpeechRef = useRef(false);
+  const onTranscriptRef = useRef(options.onTranscript);
+  const onInterruptRef = useRef(options.onInterrupt);
+
+  onTranscriptRef.current = options.onTranscript;
+  onInterruptRef.current = options.onInterrupt;
 
   useEffect(() => {
     // Check for browser support
@@ -61,13 +67,13 @@ export function useVoiceRecognition(options: VoiceRecognitionOptions = {}) {
 
       if (interim) {
         setInterimTranscript(interim);
-        options.onTranscript?.(interim, false);
+        onTranscriptRef.current?.(interim, false);
       }
 
       if (final) {
         setTranscript(prev => prev + ' ' + final);
         setInterimTranscript('');
-        options.onTranscript?.(final, true);
+        onTranscriptRef.current?.(final, true);
         console.log('[Voice] Final transcript:', final);
 
         // Reset silence timeout
@@ -78,14 +84,23 @@ export function useVoiceRecognition(options: VoiceRecognitionOptions = {}) {
     };
 
     recognition.onerror = (event: any) => {
+      // no-speech = user didn't speak in time; treat as non-fatal, don't surface or log as error
+      if (event.error === 'no-speech') {
+        stoppedByNoSpeechRef.current = true;
+        return;
+      }
       console.error('[Voice] Recognition error:', event.error);
       setError(event.error);
       setIsListening(false);
     };
 
     recognition.onend = () => {
+      const wasNoSpeech = stoppedByNoSpeechRef.current;
+      stoppedByNoSpeechRef.current = false;
       setIsListening(false);
-      console.log('[Voice] Stopped listening');
+      if (!wasNoSpeech) {
+        console.log('[Voice] Stopped listening');
+      }
     };
 
     recognitionRef.current = recognition;
@@ -143,7 +158,7 @@ export function useVoiceRecognition(options: VoiceRecognitionOptions = {}) {
       // Detect any speech - trigger interrupt
       if (event.results.length > 0) {
         console.log('[Voice] Interrupt detected!');
-        options.onInterrupt?.();
+        onInterruptRef.current?.();
         interruptRecognition.stop();
       }
     };

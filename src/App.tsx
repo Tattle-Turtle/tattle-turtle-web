@@ -11,7 +11,6 @@ import {
   Heart,
   Settings,
   User,
-  Send,
   ArrowLeft,
   Activity,
   AlertTriangle,
@@ -22,7 +21,6 @@ import {
   Sparkles,
   Phone,
   PhoneOff,
-  PhoneIncoming,
   Volume2,
   VolumeX,
   Mic,
@@ -33,47 +31,33 @@ import {
   LogOut
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
-import Markdown from 'react-markdown';
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { useSpeech } from './hooks/useSpeech';
 import { useVoiceRecognition } from './hooks/useVoiceRecognition';
 import { useCallTimer } from './hooks/useCallTimer';
-import { getSession, onAuthStateChange, supabase } from './lib/supabase';
+// Auth removed for now; server uses DEFAULT_PARENT_ID when no token
 import { Link } from 'react-router-dom';
 import { ReactiveEyes } from './components/ReactiveEyes';
 import { NotFoundPage } from './components/NotFoundPage';
 import { ERROR_MESSAGES, LOADING_MESSAGES, KID_COPY, getVoiceErrorMessage } from './lib/errorMessages';
 
-type PageMode = 'landing' | 'parent-auth' | 'setup' | 'child' | 'chat' | 'missions' | 'parent' | 'edit-character' | 'child-login';
-type OverlayMode = 'incoming-call' | 'connecting-call' | 'on-call' | 'post-call-reward';
+type PageMode = 'child' | 'missions';
+type OverlayMode = 'on-call' | 'post-call-reward';
 type AppMode = PageMode | OverlayMode;
 
 const PATH_TO_MODE: Record<string, AppMode> = {
-  '/': 'landing',
-  '/login': 'parent-auth',
-  '/setup': 'setup',
+  '/': 'child',
   '/home': 'child',
-  '/chat': 'chat',
   '/missions': 'missions',
-  '/parent': 'parent',
-  '/character': 'edit-character',
-  '/play': 'child-login',
 };
 
 const MODE_TO_PATH: Record<PageMode, string> = {
-  landing: '/',
-  'parent-auth': '/login',
-  setup: '/setup',
   child: '/home',
-  chat: '/chat',
   missions: '/missions',
-  parent: '/parent',
-  'edit-character': '/character',
-  'child-login': '/play',
 };
 
-const OVERLAY_MODES: OverlayMode[] = ['incoming-call', 'connecting-call', 'on-call', 'post-call-reward'];
+const OVERLAY_MODES: OverlayMode[] = ['on-call', 'post-call-reward'];
 
 function isOverlayMode(m: AppMode): m is OverlayMode {
   return OVERLAY_MODES.includes(m as OverlayMode);
@@ -84,28 +68,18 @@ function cn(...inputs: ClassValue[]) {
 }
 
 const BREADCRUMB_LABELS: Record<PageMode, string> = {
-  landing: 'Home',
-  'parent-auth': 'Log in',
-  setup: 'Add child',
-  child: 'Play',
-  chat: 'Chat',
-  missions: 'Missions',
-  parent: 'Parent portal',
-  'edit-character': 'Character',
-  'child-login': 'Enter code',
+  child: 'Home',
+  missions: 'Feed Tammy',
 };
 
 const NAV_ITEMS: { path: string; label: string; mode: PageMode; Icon: React.ComponentType<{ size?: number; className?: string }> }[] = [
   { path: '/home', label: 'Home', mode: 'child', Icon: Home },
-  { path: '/chat', label: 'Chat', mode: 'chat', Icon: MessageCircle },
-  { path: '/missions', label: 'Missions', mode: 'missions', Icon: Star },
-  { path: '/parent', label: 'Grown-ups', mode: 'parent', Icon: ShieldCheck },
-  { path: '/character', label: 'Character', mode: 'edit-character', Icon: User },
+  { path: '/missions', label: 'Feed Tammy', mode: 'missions', Icon: Star },
 ];
 
 function AppNav({ routeMode }: { routeMode: PageMode }) {
   const crumbs: { path: string; label: string }[] = [{ path: '/home', label: 'Home' }];
-  if (routeMode !== 'child' && routeMode !== 'landing' && routeMode !== 'parent-auth') {
+  if (routeMode !== 'child') {
     const label = BREADCRUMB_LABELS[routeMode];
     const path = MODE_TO_PATH[routeMode];
     if (path) crumbs.push({ path, label });
@@ -207,6 +181,9 @@ type Mission = {
   difficulty?: 'easy' | 'medium' | 'stretch';
   points: number;
   completed: boolean;
+  steps?: string[];
+  completed_at?: string | null;
+  shared_with_parent_at?: string | null;
 };
 
 type ParentReport = {
@@ -236,12 +213,19 @@ type ChildSummary = {
   access_allowed?: boolean;
 };
 
+type Celebration = {
+  id: number;
+  title: string;
+  child_name: string;
+  shared_at: string;
+};
+
 export default function App() {
   const location = useLocation();
   const navigate = useNavigate();
   const pathname = location.pathname;
   const is404 = pathname in PATH_TO_MODE === false;
-  const routeMode = (PATH_TO_MODE[pathname] ?? 'landing') as PageMode;
+  const routeMode = (PATH_TO_MODE[pathname] ?? 'child') as PageMode;
   const [overlayMode, setOverlayMode] = useState<OverlayMode | null>(null);
   const mode: AppMode = overlayMode ?? routeMode;
 
@@ -255,12 +239,7 @@ export default function App() {
     if (path !== undefined && path !== pathname) navigate(path);
   };
 
-  const [session, setSession] = useState<import("@supabase/supabase-js").Session | null>(null);
-  const [authLoading, setAuthLoading] = useState(true);
-  const [parentAuthEmail, setParentAuthEmail] = useState('');
-  const [parentAuthPassword, setParentAuthPassword] = useState('');
-  const [parentAuthError, setParentAuthError] = useState('');
-  const [parentAuthSignUp, setParentAuthSignUp] = useState(false);
+  const [authLoading, setAuthLoading] = useState(false);
   const [setupStep, setSetupStep] = useState(1);
   const [messages, setMessages] = useState<Message[]>([]);
   const [badges, setBadges] = useState<Badge[]>([]);
@@ -272,6 +251,7 @@ export default function App() {
   const [report, setReport] = useState<ParentReport | null>(null);
   const [requests, setRequests] = useState<ChildRequest[]>([]);
   const [children, setChildren] = useState<ChildSummary[]>([]);
+  const [celebrations, setCelebrations] = useState<Celebration[]>([]);
   const [selectedChildId, setSelectedChildId] = useState<number | null>(null);
   const [showBadgePopup, setShowBadgePopup] = useState<Badge | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
@@ -284,6 +264,7 @@ export default function App() {
     character_type: 'Turtle',
     color: 'Emerald'
   });
+  const [setupError, setSetupError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { speak, stop, isSpeaking, speechError, clearSpeechError } = useSpeech();
 
@@ -291,7 +272,6 @@ export default function App() {
   const [isVoiceMode, setIsVoiceMode] = useState(false);
   const [childTranscript, setChildTranscript] = useState('');
   const [aiTranscript, setAiTranscript] = useState('');
-  const [showTextInput, setShowTextInput] = useState(false);
 
   // Post-call reward (current screen) and pending reward (collect later on home)
   const [rewardItem, setRewardItem] = useState<{ name: string; emoji: string; points: number } | null>(null);
@@ -310,6 +290,8 @@ export default function App() {
   const [childLoginCode, setChildLoginCode] = useState('');
   const [childLoginLoading, setChildLoginLoading] = useState(false);
   const [regenerateCodeResult, setRegenerateCodeResult] = useState<string | null>(null);
+  const [completingMissionId, setCompletingMissionId] = useState<number | null>(null);
+  const [missionEncouragement, setMissionEncouragement] = useState<{ missionId: number; title: string; encouragement: string } | null>(null);
   const [editCharacterData, setEditCharacterData] = useState({
     character_name: 'Shelly',
     character_type: 'Turtle',
@@ -337,44 +319,20 @@ export default function App() {
 
   const apiHeaders = (childId?: number | null): HeadersInit => {
     const h: HeadersInit = { 'Content-Type': 'application/json' };
-    if (session?.access_token) h['Authorization'] = `Bearer ${session.access_token}`;
     if (childId != null) h['X-Child-Id'] = String(childId);
     return h;
   };
 
   useEffect(() => {
-    getSession().then(({ data }) => {
-      setSession(data.session);
-      setAuthLoading(false);
-    });
-    const { data: { subscription } } = onAuthStateChange((_event, newSession) => {
-      setSession(newSession);
-    });
-    return () => subscription.unsubscribe();
+    fetchProfile();
   }, []);
 
   useEffect(() => {
-    if (authLoading) return;
-    if (session) {
-      fetchProfile();
-    } else {
-      setProfile(null);
-    }
-  }, [session, authLoading]);
-
-  useEffect(() => {
-    if (mode === 'chat') {
-      fetchMessages();
-      fetchBadges();
-    } else if (mode === 'missions') {
-      fetchMissions();
-    } else if (mode === 'parent') {
-      fetchParentData();
-    }
+    if (mode === 'missions') fetchMissions();
   }, [mode]);
 
   useEffect(() => {
-    if (mode === 'edit-character' && profile) {
+    if (mode === 'child' && profile) {
       setEditCharacterData({
         character_name: profile.character_name || 'Shelly',
         character_type: profile.character_type || 'Turtle',
@@ -395,44 +353,43 @@ export default function App() {
     }
   }, [messages, aiTranscript, childTranscript]);
 
-  // Post-call: analyze conversation for summary and suggestions (guide the student)
+  // Post-call: analyze conversation and create missions from conversation (Feed Tammy)
   useEffect(() => {
     if (overlayMode !== 'post-call-reward' || callAnalysis || callAnalysisLoading || messages.length === 0) return;
     setCallAnalysisError(null);
     setCallAnalysisLoading(true);
-    fetch('/api/call/analyze', {
-      method: 'POST',
-      headers: apiHeaders(selectedChildId ?? profile?.id),
-      body: JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) }),
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => data && setCallAnalysis({ summary: data.summary || '', issues: data.issues || [], suggestions: data.suggestions || [] }))
+    const headers = apiHeaders(selectedChildId ?? profile?.id);
+    const body = JSON.stringify({ messages: messages.map(({ role, content }) => ({ role, content })) });
+    Promise.all([
+      fetch('/api/call/analyze', { method: 'POST', headers, body }).then((r) => (r.ok ? r.json() : null)),
+      fetch('/api/call/missions', { method: 'POST', headers, body }).then((r) => (r.ok ? r.json() : null)),
+    ])
+      .then(([analyzeData]) => {
+        if (analyzeData) setCallAnalysis({ summary: analyzeData.summary || '', issues: analyzeData.issues || [], suggestions: analyzeData.suggestions || [] });
+      })
       .catch(() => setCallAnalysisError(ERROR_MESSAGES.call.analyzeFailed))
       .finally(() => setCallAnalysisLoading(false));
   }, [overlayMode, messages, callAnalysis, callAnalysisLoading]);
 
-  // Clear call analysis when starting a new call
+  // When entering on-call (direct from Talk to Tammy): init messages, voice, timer. Run once per call.
+  const onCallInitDoneRef = useRef(false);
   useEffect(() => {
-    if (overlayMode === 'incoming-call') setCallAnalysis(null);
-  }, [overlayMode]);
-
-  // Connecting-call: auto-transition to on-call after 1–3s (must be top-level to respect Rules of Hooks)
-  useEffect(() => {
-    if (overlayMode !== 'connecting-call') return;
-    const delay = 1000 + Math.random() * 2000;
-    const timer = setTimeout(() => {
-      setOverlayMode('on-call');
-      if (profile?.id != null) setSelectedChildId((id) => id ?? profile!.id);
-      fetchMessages();
-      setIsVoiceMode(true);
-      voiceRecognition.start();
-      callTimer.start();
-    }, delay);
-    return () => clearTimeout(timer);
+    if (overlayMode !== 'on-call') {
+      onCallInitDoneRef.current = false;
+      return;
+    }
+    if (onCallInitDoneRef.current) return;
+    onCallInitDoneRef.current = true;
+    setCallAnalysis(null);
+    if (profile?.id != null) setSelectedChildId((id) => id ?? profile!.id);
+    fetchMessages();
+    setIsVoiceMode(true);
+    voiceRecognition.start();
+    callTimer.start();
   }, [overlayMode, profile?.id]);
 
   const fetchProfile = async () => {
-    if (session) setProfileLoading(true);
+    setProfileLoading(true);
     const res = await fetch('/api/profile', { headers: apiHeaders() });
     if (res.status === 401) {
       setProfile(null);
@@ -443,16 +400,8 @@ export default function App() {
     setProfile(data);
     setProfileLoading(false);
     if (data?.id) setSelectedChildId(data.id);
-    // Only redirect when on landing so deep links (e.g. /chat) are preserved on refresh
-    const atLanding = pathname === '/';
-    if (!atLanding) return;
-    if (data && data.child_name) {
-      goTo('child');
-    } else if (session && !data) {
-      goTo('setup');
-    } else {
-      goTo('landing');
-    }
+    const atRoot = pathname === '/' || pathname === '/home';
+    if (atRoot) goTo('child');
   };
 
   const fetchMessages = async () => {
@@ -493,10 +442,11 @@ export default function App() {
     setParentDataLoading(true);
     try {
       const headers = apiHeaders(selectedChildId ?? undefined);
-      const [reportRes, requestsRes, childrenRes] = await Promise.all([
+      const [reportRes, requestsRes, childrenRes, celebrationsRes] = await Promise.all([
         fetch('/api/parent/report', { headers }),
         fetch('/api/parent/requests', { headers }),
-        fetch('/api/parent/children', { headers })
+        fetch('/api/parent/children', { headers }),
+        fetch('/api/parent/celebrations', { headers })
       ]);
 
       if (reportRes.status === 401 || requestsRes.status === 401 || childrenRes.status === 401) {
@@ -504,15 +454,17 @@ export default function App() {
         return;
       }
 
-      const [reportData, requestsData, childrenData] = await Promise.all([
+      const [reportData, requestsData, childrenData, celebrationsData] = await Promise.all([
         reportRes.ok ? reportRes.json() : Promise.resolve(null),
         requestsRes.ok ? requestsRes.json() : Promise.resolve([]),
-        childrenRes.ok ? childrenRes.json() : Promise.resolve([])
+        childrenRes.ok ? childrenRes.json() : Promise.resolve([]),
+        celebrationsRes.ok ? celebrationsRes.json() : Promise.resolve([])
       ]);
 
       setReport(reportData);
       setRequests(requestsData);
       setChildren(childrenData);
+      setCelebrations(celebrationsData ?? []);
       if (childrenData && childrenData.length > 0) {
         if (!selectedChildId) {
           const stored = typeof localStorage !== 'undefined' ? localStorage.getItem('brave_selected_child_id') : null;
@@ -556,19 +508,42 @@ export default function App() {
   };
 
   const handleSetup = async () => {
+    setSetupError(null);
+    const name = setupData.child_name?.trim() ?? '';
+    const ageNum = setupData.child_age === '' ? NaN : parseInt(setupData.child_age, 10);
+    if (!name) {
+      setSetupError("Please enter your child's name.");
+      return;
+    }
+    if (Number.isNaN(ageNum) || ageNum < 4 || ageNum > 12) {
+      setSetupError("Please enter an age between 4 and 12.");
+      return;
+    }
     setIsCreating(true);
     setShowChildCodeReveal(false);
     setChildCodeReveal('');
+    const isAddingAnotherChild = children.length > 0;
+    const body: Record<string, unknown> = {
+      child_name: name,
+      child_age: ageNum,
+      character_name: setupData.character_name || 'Shelly',
+      character_type: setupData.character_type || 'Turtle',
+      color: setupData.color || 'Emerald'
+    };
+    if (!isAddingAnotherChild) {
+      body.parent_contact = setupData.parent_contact ?? '';
+    }
     try {
       const res = await fetch('/api/profile', {
         method: 'POST',
         headers: apiHeaders(),
-        body: JSON.stringify({
-          ...setupData,
-          child_age: parseInt(setupData.child_age)
-        }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
+      if (!res.ok) {
+        setSetupError(data?.error || "Something went wrong. Please try again.");
+        return;
+      }
       setProfile(data);
       if (data?.id) setSelectedChildId(data.id);
       if (data?.access_code) {
@@ -579,6 +554,7 @@ export default function App() {
       }
     } catch (err) {
       console.error(err);
+      setSetupError("Something went wrong. Please check your connection and try again.");
     } finally {
       setIsCreating(false);
     }
@@ -610,17 +586,20 @@ export default function App() {
       }
 
       if (!res.ok) {
+        const errorContent = data.error || ERROR_MESSAGES.generic.tryAgain;
         setMessages(prev => [...prev, {
           id: Date.now(),
           role: 'model',
-          content: data.error || ERROR_MESSAGES.generic.tryAgain,
+          content: errorContent,
           timestamp: new Date().toISOString()
         }]);
+        setAiTranscript(errorContent);
+        if (!isMuted && errorContent) speak(errorContent);
         return;
       }
 
       setMessages(prev => [...prev, { id: Date.now(), role: 'model', content: data.response, timestamp: new Date().toISOString() }]);
-      setAiTranscript(data.response);
+      setAiTranscript(data.response ?? '');
 
       // Speak the response if not muted
       if (!isMuted && data.response) {
@@ -645,12 +624,15 @@ export default function App() {
       }, 1000);
     } catch (err) {
       console.error(err);
+      const fallbackMsg = "Oops! I'm having a little trouble. Can you check the internet?";
       setMessages(prev => [...prev, {
         id: Date.now(),
         role: 'model',
-        content: "Oops! I'm having a little trouble. Can you check the internet?",
+        content: fallbackMsg,
         timestamp: new Date().toISOString()
       }]);
+      setAiTranscript(fallbackMsg);
+      if (!isMuted) speak(fallbackMsg);
     } finally {
       setIsLoading(false);
     }
@@ -720,7 +702,7 @@ export default function App() {
 
   if (is404) return <NotFoundPage />;
 
-  if (authLoading || (session && profileLoading)) {
+  if (profileLoading && (pathname === '/' || pathname === '/home')) {
     return (
       <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
         <div className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 max-w-sm text-center space-y-6">
@@ -733,348 +715,9 @@ export default function App() {
     );
   }
 
-  if (mode === 'landing') {
-    return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
-        <motion.div 
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="text-center space-y-8 max-w-md"
-        >
-          <div className="bg-white p-8 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 relative overflow-hidden">
-            <motion.div 
-              animate={{ rotate: [0, 5, -5, 0] }} 
-              transition={{ repeat: Infinity, duration: 4 }}
-              className="flex justify-center mb-4"
-            >
-              {profile?.image_data ? (
-                <img 
-                  src={profile.image_data} 
-                  alt="Character" 
-                  className="w-32 h-32 rounded-full border-4 border-emerald-100 shadow-lg object-cover"
-                />
-              ) : (
-                <div className="bg-emerald-100 p-8 rounded-full shadow-inner">
-                  <Turtle size={100} className="text-emerald-600" />
-                </div>
-              )}
-            </motion.div>
-            <h1 className="text-5xl font-black text-emerald-900 mb-2 tracking-tight">
-              {profile ? `Hi, ${profile.child_name}!` : "Shelly & Friends"}
-            </h1>
-            <p className="text-emerald-600 text-xl font-medium">
-              {profile ? "One tiny brave move — in under two minutes." : "A warm pocket friend for small acts of courage."}
-            </p>
-          </div>
-
-          <div className="grid grid-cols-1 gap-4 w-full">
-            <motion.button 
-              whileHover={{ scale: 1.02 }}
-              whileTap={{ scale: 0.98 }}
-              onClick={() => {
-                if (profile) goTo('child');
-                else if (session) goTo('setup');
-                else goTo('parent-auth');
-              }}
-              className="touch-target-lg bg-emerald-500 hover:bg-emerald-600 text-white font-black py-6 px-8 rounded-3xl shadow-[0_8px_0_rgb(5,150,105)] transition-all flex items-center justify-center gap-4 text-2xl min-h-[56px]"
-            >
-              <MessageCircle size={32} strokeWidth={3} />
-              {profile ? "Let's play!" : "Get started"}
-            </motion.button>
-            <button 
-              onClick={() => session ? goTo('parent') : goTo('parent-auth')}
-              className="touch-target bg-white hover:bg-emerald-50 text-emerald-700 font-bold py-4 px-8 rounded-2xl border-2 border-emerald-200 shadow-sm transition-all flex items-center justify-center gap-3 min-h-[48px]"
-            >
-              <ShieldCheck size={22} />
-              Grown-ups only
-            </button>
-          </div>
-          <p className="text-center mt-6 space-x-4">
-            <button
-              type="button"
-              onClick={() => goTo('parent-auth')}
-              className="text-sm text-emerald-600 hover:underline"
-            >
-              Log in or sign up as parent
-            </button>
-            {session && (
-              <button
-                type="button"
-                onClick={() => goTo('child-login')}
-                className="text-sm text-emerald-600 hover:underline"
-              >
-                I have a code
-              </button>
-            )}
-          </p>
-        </motion.div>
-      </div>
-    );
-  }
-
-  if (mode === 'parent-auth') {
-    const handleParentAuth = async (e: React.FormEvent) => {
-      e.preventDefault();
-      setParentAuthError('');
-      if (!supabase) {
-        setParentAuthError(ERROR_MESSAGES.auth.authNotConfigured);
-        return;
-      }
-      try {
-        if (parentAuthSignUp) {
-          const { error } = await supabase.auth.signUp({ email: parentAuthEmail, password: parentAuthPassword });
-          if (error) throw error;
-          setParentAuthError(ERROR_MESSAGES.auth.checkEmail);
-        } else {
-          const { error } = await supabase.auth.signInWithPassword({ email: parentAuthEmail, password: parentAuthPassword });
-          if (error) throw error;
-          await fetch('/api/auth/profile', { method: 'POST', headers: apiHeaders() });
-          const profileRes = await fetch('/api/profile', { headers: apiHeaders() });
-          const profileData = profileRes.ok ? await profileRes.json() : null;
-          if (profileData?.child_name) goTo('child');
-          else if (profileData === null) goTo('setup');
-          else goTo('parent');
-        }
-      } catch (err: any) {
-        setParentAuthError(err.message ?? ERROR_MESSAGES.auth.signInFailed);
-      }
-    };
-    return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
-        <div className="bg-white p-8 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-sm space-y-6">
-          <h2 className="text-2xl font-black text-emerald-900 text-center">Parent sign in</h2>
-          <form onSubmit={handleParentAuth} className="space-y-4">
-            <input
-              type="email"
-              placeholder="Email"
-              value={parentAuthEmail}
-              onChange={(e) => setParentAuthEmail(e.target.value)}
-              className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-3 text-emerald-900"
-              required
-            />
-            <input
-              type="password"
-              placeholder="Password"
-              value={parentAuthPassword}
-              onChange={(e) => setParentAuthPassword(e.target.value)}
-              className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-3 text-emerald-900"
-              required
-            />
-            {parentAuthError && <p className="text-sm text-rose-600">{parentAuthError}</p>}
-            <button type="submit" className="w-full bg-emerald-500 text-white font-bold py-3 rounded-xl">
-              {parentAuthSignUp ? 'Sign up' : 'Sign in'}
-            </button>
-          </form>
-          <button type="button" onClick={() => setParentAuthSignUp(!parentAuthSignUp)} className="w-full text-sm text-emerald-600 hover:underline">
-            {parentAuthSignUp ? 'Already have an account? Sign in' : 'Need an account? Sign up'}
-          </button>
-          <button type="button" onClick={() => goTo('landing')} className="w-full text-sm text-slate-500 hover:underline">
-            Back
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (mode === 'setup') {
-    if (showChildCodeReveal && childCodeReveal) {
-      return (
-        <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
-          <motion.div
-            initial={{ scale: 0.9, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-md space-y-6 text-center"
-          >
-            <h2 className="text-2xl font-black text-emerald-900">Your child&apos;s code</h2>
-            <p className="text-emerald-700">They can use this to open Brave Call and play.</p>
-            <div className="bg-emerald-100 py-6 px-8 rounded-3xl border-4 border-emerald-200">
-              <p className="text-4xl font-black text-emerald-900 tracking-[0.5em]">{childCodeReveal}</p>
-            </div>
-            <div className="flex gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  navigator.clipboard?.writeText(childCodeReveal);
-                }}
-                className="flex-1 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold py-4 rounded-2xl"
-              >
-                Copy
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setShowChildCodeReveal(false);
-                  setChildCodeReveal('');
-                  goTo('child');
-                }}
-                className="flex-[2] bg-emerald-500 hover:bg-emerald-600 text-white font-black py-4 rounded-2xl shadow-[0_4px_0_rgb(5,150,105)]"
-              >
-                Go to Play
-              </button>
-            </div>
-            <p className="text-sm text-slate-500">You can change or turn off this code anytime in Parent Portal.</p>
-          </motion.div>
-        </div>
-      );
-    }
-    return (
-      <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
-        <div className="absolute top-0 left-0 right-0 z-10">
-          <AppNav routeMode="setup" />
-        </div>
-        <motion.div 
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-lg space-y-8 relative overflow-hidden"
-        >
-          {isCreating && (
-            <div className="absolute inset-0 bg-white/90 z-50 flex flex-col items-center justify-center p-8 text-center">
-              <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: "linear" }} className="mb-6">
-                <Sparkles size={80} className="text-amber-400" />
-              </motion.div>
-              <h3 className="text-3xl font-black text-emerald-900 uppercase mb-2">{LOADING_MESSAGES.setup}</h3>
-            </div>
-          )}
-
-          <div className="text-center">
-            <p className="text-sm font-bold text-emerald-600 uppercase tracking-wider mb-2">Step {setupStep} of 3</p>
-            <div className="flex justify-center gap-2 mb-4">
-              {[1, 2, 3].map(s => (
-                <div key={s} className={cn("w-3 h-3 rounded-full", setupStep >= s ? "bg-emerald-500" : "bg-emerald-100")} />
-              ))}
-            </div>
-            <h2 className="text-3xl font-black text-emerald-900 uppercase">
-              {setupStep === 1 ? "Parent Info" : setupStep === 2 ? "Add your Explorer" : "Choose Friend"}
-            </h2>
-          </div>
-
-          <div className="space-y-6">
-            {setupStep === 1 && (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Parent Email or Phone</label>
-                  <input 
-                    type="text"
-                    value={setupData.parent_contact}
-                    onChange={(e) => setSetupData({ ...setupData, parent_contact: e.target.value })}
-                    placeholder="email@example.com"
-                    className="w-full bg-emerald-50 border-4 border-emerald-100 rounded-2xl px-6 py-4 text-xl font-bold text-emerald-900 outline-none focus:border-emerald-300 transition-all"
-                  />
-                </div>
-                <button 
-                  onClick={() => setupData.parent_contact && setSetupStep(2)}
-                  className="w-full bg-emerald-500 text-white font-black py-6 rounded-3xl shadow-[0_6px_0_rgb(5,150,105)] text-xl"
-                >
-                  NEXT
-                </button>
-              </div>
-            )}
-
-            {setupStep === 2 && (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Child's Name</label>
-                  <input 
-                    type="text"
-                    value={setupData.child_name}
-                    onChange={(e) => setSetupData({ ...setupData, child_name: e.target.value })}
-                    placeholder="Your Name"
-                    className="w-full bg-emerald-50 border-4 border-emerald-100 rounded-2xl px-6 py-4 text-xl font-bold text-emerald-900 outline-none focus:border-emerald-300 transition-all"
-                  />
-                </div>
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Child's Age</label>
-                  <input 
-                    type="number"
-                    value={setupData.child_age}
-                    onChange={(e) => setSetupData({ ...setupData, child_age: e.target.value })}
-                    placeholder="Age"
-                    className="w-full bg-emerald-50 border-4 border-emerald-100 rounded-2xl px-6 py-4 text-xl font-bold text-emerald-900 outline-none focus:border-emerald-300 transition-all"
-                  />
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setSetupStep(1)} className="flex-1 bg-emerald-100 text-emerald-700 font-black py-6 rounded-3xl">BACK</button>
-                  <button 
-                    onClick={() => setupData.child_name && setupData.child_age && setSetupStep(3)}
-                    className="flex-[2] bg-emerald-500 text-white font-black py-6 rounded-3xl shadow-[0_6px_0_rgb(5,150,105)]"
-                  >
-                    NEXT
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {setupStep === 3 && (
-              <div className="space-y-6">
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Friend's Name</label>
-                  <input
-                    type="text"
-                    value={setupData.character_name}
-                    onChange={(e) => setSetupData({ ...setupData, character_name: e.target.value })}
-                    className="w-full bg-emerald-50 border-4 border-emerald-100 rounded-2xl px-6 py-4 text-xl font-bold text-emerald-900 outline-none focus:border-emerald-300 transition-all"
-                  />
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Choose Type</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {['Turtle', 'Dolphin', 'Crab', 'Bunny', 'Fox', 'Owl'].map(type => (
-                      <button
-                        key={type}
-                        onClick={() => setSetupData({ ...setupData, character_type: type })}
-                        className={cn("py-4 rounded-2xl font-bold border-4 transition-all", setupData.character_type === type ? "bg-emerald-500 text-white border-emerald-600 scale-105" : "bg-emerald-50 text-emerald-600 border-emerald-100 hover:border-emerald-200")}
-                      >
-                        {type}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-sm font-black text-emerald-800 uppercase tracking-widest">Pick Color</label>
-                  <div className="grid grid-cols-3 gap-3">
-                    {[
-                      { name: 'Emerald', color: 'bg-emerald-500' },
-                      { name: 'Ocean', color: 'bg-blue-500' },
-                      { name: 'Sunset', color: 'bg-orange-500' },
-                      { name: 'Rose', color: 'bg-rose-500' },
-                      { name: 'Purple', color: 'bg-purple-500' },
-                      { name: 'Mint', color: 'bg-teal-400' },
-                    ].map(({ name, color }) => (
-                      <button
-                        key={name}
-                        onClick={() => setSetupData({ ...setupData, color: name })}
-                        className={cn("py-4 rounded-2xl font-bold border-4 transition-all", setupData.color === name ? `${color} text-white border-white scale-105 shadow-lg` : "bg-white border-slate-200 hover:border-slate-300")}
-                      >
-                        <div className="flex flex-col items-center gap-1">
-                          <div className={cn("w-6 h-6 rounded-full", color)} />
-                          <span className="text-xs">{name}</span>
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                </div>
-                <div className="flex gap-3">
-                  <button onClick={() => setSetupStep(2)} className="flex-1 bg-emerald-100 text-emerald-700 font-black py-6 rounded-3xl">BACK</button>
-                  <button 
-                    onClick={handleSetup}
-                    className="flex-[2] bg-emerald-500 text-white font-black py-6 rounded-3xl shadow-[0_6px_0_rgb(5,150,105)]"
-                  >
-                    FINISH!
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
   if (mode === 'child') {
     return (
-      <div className="min-h-screen pb-24 md:pb-0 bg-gradient-to-b from-sky-300 via-emerald-200 to-emerald-300 flex flex-col font-sans lg:max-w-full xl:max-w-7xl mx-auto lg:shadow-2xl relative overflow-hidden">
+      <div className="min-h-screen min-h-[100dvh] pb-24 md:pb-0 bg-gradient-to-b from-sky-300 via-emerald-200 to-emerald-300 flex flex-col font-sans w-full lg:max-w-full xl:max-w-7xl mx-auto lg:shadow-2xl relative overflow-hidden">
         <AppNav routeMode="child" />
         {/* Decorative habitat elements */}
         <div className="absolute inset-0 pointer-events-none">
@@ -1154,30 +797,6 @@ export default function App() {
         {/* Header - minimal overlay */}
         <header className="relative z-20 p-4 md:p-6 lg:p-8">
           <div className="flex items-center justify-between max-w-6xl mx-auto">
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => goTo('parent')}
-                className="touch-target bg-white/80 backdrop-blur-sm p-3 px-5 md:p-4 md:px-6 rounded-2xl shadow-lg hover:bg-white transition-colors flex items-center gap-2"
-                aria-label="Grown-ups only"
-              >
-                <ShieldCheck className="text-emerald-600" size={22} />
-                <span className="text-xs md:text-sm lg:text-base font-bold text-emerald-700">Grown-ups</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setProfile(null);
-                  setSelectedChildId(null);
-                  goTo('child-login');
-                }}
-                className="touch-target bg-white/80 backdrop-blur-sm p-3 px-4 md:p-4 md:px-5 rounded-2xl shadow-lg hover:bg-white transition-colors flex items-center gap-2"
-                aria-label="Log out"
-              >
-                <LogOut className="text-slate-600" size={20} />
-                <span className="text-xs md:text-sm font-bold text-slate-600">Log out</span>
-              </button>
-            </div>
-
             <div className="flex items-center gap-2 md:gap-3 bg-white/80 backdrop-blur-sm px-4 py-2 md:px-6 md:py-3 lg:px-8 lg:py-4 rounded-full shadow-lg">
               <div className="text-right">
                 <p className="text-[10px] md:text-xs lg:text-sm font-black text-emerald-500 uppercase tracking-widest">Brave Explorer</p>
@@ -1222,7 +841,7 @@ export default function App() {
             <motion.button
               whileHover={{ scale: 1.02, y: -2 }}
               whileTap={{ scale: 0.98 }}
-              onClick={() => goTo('incoming-call')}
+              onClick={() => goTo('on-call')}
               className="w-full bg-emerald-500 hover:bg-emerald-600 p-4 md:p-6 lg:p-8 rounded-[32px] shadow-[0_6px_0_rgb(5,150,105)] md:shadow-[0_8px_0_rgb(5,150,105)] active:shadow-[0_4px_0_rgb(5,150,105)] active:translate-y-1 text-white flex items-center justify-between group"
             >
               <div className="flex items-center gap-3 md:gap-4">
@@ -1234,8 +853,8 @@ export default function App() {
                   <Phone size={24} className="md:w-8 md:h-8" strokeWidth={3} />
                 </motion.div>
                 <div className="text-left">
-                  <h3 className="text-xl md:text-3xl lg:text-4xl font-black">Call {profile?.character_name}</h3>
-                  <p className="text-emerald-100 font-bold text-sm md:text-base lg:text-lg">Talk about anything!</p>
+                  <h3 className="text-xl md:text-3xl lg:text-4xl font-black">Talk to {profile?.character_name || 'Tammy'}</h3>
+                  <p className="text-emerald-100 font-bold text-sm md:text-base lg:text-lg">Brave Call — talk about anything!</p>
                 </div>
               </div>
               <div className="text-3xl md:text-4xl lg:text-5xl group-hover:scale-110 transition-transform">📞</div>
@@ -1252,109 +871,58 @@ export default function App() {
                   <Trophy size={24} className="md:w-8 md:h-8" strokeWidth={3} />
                 </div>
                 <div className="text-left">
-                  <h3 className="text-xl md:text-3xl lg:text-4xl font-black">Brave Missions</h3>
-                  <p className="text-amber-700 font-bold text-sm md:text-base lg:text-lg">Earn rewards!</p>
+                  <h3 className="text-xl md:text-3xl lg:text-4xl font-black">Feed {profile?.character_name || 'Tammy'}</h3>
+                  <p className="text-amber-700 font-bold text-sm md:text-base lg:text-lg">Missions & celebrate!</p>
                 </div>
               </div>
               <div className="text-3xl md:text-4xl lg:text-5xl group-hover:scale-110 transition-transform">🏆</div>
             </motion.button>
 
-            <button
-              onClick={() => goTo('edit-character')}
-              className="w-full py-2 md:py-3 lg:py-4 text-emerald-700 text-sm md:text-base lg:text-lg font-bold flex items-center justify-center gap-2 hover:bg-white/50 rounded-2xl transition-colors bg-white/30 backdrop-blur-sm"
-            >
-              <Settings size={16} className="md:w-5 md:h-5" />
-              Customize Character
-            </button>
           </div>
         </main>
       </div>
     );
   }
 
-  if (mode === 'chat') {
+  if (mode === 'missions') {
+    const handleCompleteMission = async (m: Mission) => {
+      if (m.completed || completingMissionId != null) return;
+      setCompletingMissionId(m.id);
+      try {
+        const res = await fetch(`/api/missions/${m.id}/complete`, {
+          method: 'PATCH',
+          headers: apiHeaders(selectedChildId ?? profile?.id),
+        });
+        const data = res.ok ? await res.json() : null;
+        const encouragement = data?.encouragement ?? "You did it! That was brave.";
+        setMissions((prev) => prev.map((x) => (x.id === m.id ? { ...x, completed: true, completed_at: new Date().toISOString() } : x)));
+        setMissionEncouragement({ missionId: m.id, title: m.title, encouragement });
+      } catch {
+        setMissionEncouragement({ missionId: m.id, title: m.title, encouragement: "You did it! That was brave." });
+      } finally {
+        setCompletingMissionId(null);
+      }
+    };
+    const handleShareMission = async (missionId: number) => {
+      try {
+        await fetch(`/api/missions/${missionId}/share`, {
+          method: 'POST',
+          headers: apiHeaders(selectedChildId ?? profile?.id),
+        });
+        setMissions((prev) => prev.map((x) => (x.id === missionId ? { ...x, shared_with_parent_at: new Date().toISOString() } : x)));
+        setMissionEncouragement(null);
+      } catch {
+        // keep popup open
+      }
+    };
     return (
       <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl relative">
-        <AppNav routeMode="chat" />
-        <header className="bg-white p-4 flex items-center justify-between border-b-4 border-emerald-100 sticky top-0 z-20">
-          <button onClick={() => goTo('child')} className="p-3 hover:bg-emerald-50 rounded-2xl transition-colors">
-            <ArrowLeft className="text-emerald-600" size={28} strokeWidth={3} />
-          </button>
-          <div className="flex flex-col items-center">
-            <div className="flex items-center gap-2 mb-1">
-              {profile?.image_data ? (
-                <img src={profile.image_data} alt="Avatar" className="w-10 h-10 rounded-full border-2 border-emerald-100 object-cover" />
-              ) : (
-                <span className="text-2xl">🐢</span>
-              )}
-              <span className="font-black text-emerald-900 text-xl uppercase tracking-wider">{profile?.character_name}</span>
-            </div>
-          </div>
-          <div className="bg-amber-100 px-3 py-1 rounded-xl border-2 border-amber-200 text-amber-700 font-bold flex items-center gap-1">
-            <Star size={14} fill="currentColor" />
-            {profile?.points}
-          </div>
-        </header>
-
-        {configError && (
-          <div className="bg-amber-50 border-b border-amber-200 p-4 flex items-center gap-3 text-amber-800 z-30">
-            <AlertTriangle size={20} className="shrink-0" />
-            <p className="text-sm font-medium">{configError}</p>
-            <button onClick={() => setConfigError(null)} className="ml-auto text-amber-900 font-bold">Close</button>
-          </div>
-        )}
-
-        <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-6 bg-[url('https://www.transparenttextures.com/patterns/cubes.png')]">
-          <AnimatePresence initial={false}>
-            {messages.map((msg) => (
-              <motion.div key={msg.id} initial={{ opacity: 0, y: 20, scale: 0.9 }} animate={{ opacity: 1, y: 0, scale: 1 }} className={cn("flex w-full", msg.role === 'user' ? "justify-end" : "justify-start")}>
-                <div className={cn("max-w-[85%] p-5 rounded-[32px] shadow-lg text-lg font-medium", msg.role === 'user' ? "bg-emerald-500 text-white rounded-tr-none shadow-[0_4px_0_rgb(5,150,105)]" : "bg-white text-emerald-900 rounded-tl-none border-2 border-emerald-100 shadow-[0_4px_0_rgb(236,253,245)]")}>
-                  <div className="markdown-body prose prose-emerald max-w-none"><Markdown>{msg.content}</Markdown></div>
-                </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-          {isLoading && (
-            <div className="flex justify-start">
-              <div className="bg-white p-5 rounded-[32px] rounded-tl-none shadow-lg border-2 border-emerald-100 flex gap-2 items-center">
-                {[0, 0.2, 0.4].map(d => <motion.div key={d} animate={{ y: [0, -5, 0] }} transition={{ repeat: Infinity, duration: 0.6, delay: d }} className="w-3 h-3 bg-emerald-400 rounded-full" />)}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <AnimatePresence>
-          {showBadgePopup && (
-            <motion.div initial={{ y: 100, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 100, opacity: 0 }} className="absolute bottom-24 left-4 right-4 bg-amber-400 text-amber-950 p-6 rounded-[32px] shadow-2xl z-50 border-4 border-white flex items-center gap-6">
-              <div className="text-6xl bg-white p-4 rounded-3xl shadow-inner">{showBadgePopup.icon}</div>
-              <div>
-                <h3 className="text-2xl font-black uppercase tracking-tight">{KID_COPY.badgeTitle}</h3>
-                <p className="text-lg font-bold">{showBadgePopup.name}</p>
-                <p className="text-emerald-700 font-bold text-sm mt-1">{KID_COPY.badgeSubtitle}</p>
-              </div>
-            </motion.div>
-          )}
-        </AnimatePresence>
-
-        <div className="p-4 bg-white border-t-4 border-emerald-100">
-          <div className="flex gap-3 bg-emerald-50 p-3 rounded-[32px] border-4 border-emerald-100 focus-within:border-emerald-300 transition-all shadow-inner">
-            <input value={input} onChange={(e) => setInput(e.target.value)} onKeyPress={(e) => e.key === 'Enter' && handleSend()} placeholder="Type here..." className="flex-1 bg-transparent px-4 py-2 outline-none text-emerald-900 placeholder:text-emerald-300 text-xl font-bold" />
-            <motion.button whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }} onClick={handleSend} disabled={isLoading} className="touch-target bg-emerald-500 hover:bg-emerald-600 text-white p-4 rounded-2xl shadow-[0_4px_0_rgb(5,150,105)] disabled:opacity-50 min-h-[44px] min-w-[44px]"><Send size={28} strokeWidth={3} /></motion.button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (mode === 'missions') {
-    return (
-      <div className="min-h-screen pb-24 md:pb-0 bg-emerald-50 flex flex-col font-sans max-w-2xl mx-auto shadow-2xl">
         <AppNav routeMode="missions" />
         <header className="bg-white p-6 border-b-4 border-emerald-100 flex items-center gap-4">
           <button onClick={() => goTo('child')} className="p-2 hover:bg-emerald-50 rounded-xl">
             <ArrowLeft className="text-emerald-600" size={24} />
           </button>
-          <h1 className="text-3xl font-black text-emerald-900 uppercase">Missions</h1>
+          <h1 className="text-3xl font-black text-emerald-900 uppercase">Feed {profile?.character_name || 'Tammy'}</h1>
         </header>
         <main className="p-6 space-y-4">
           {missionsLoading && missions.length === 0 && (
@@ -1365,593 +933,98 @@ export default function App() {
               <p className="font-medium">{LOADING_MESSAGES.child.missions}</p>
             </div>
           )}
-          {!missionsLoading && missions.map(m => (
-            <div key={m.id} className="bg-white p-6 rounded-[32px] border-4 border-emerald-100 shadow-sm flex items-center justify-between gap-4">
-              <div className="space-y-1 flex-1">
-                <div className="flex items-center gap-2">
-                  <h3 className="text-xl font-black text-emerald-900">{m.title}</h3>
-                  {m.difficulty && (
-                    <span className={cn(
-                      "text-[10px] font-black uppercase px-2 py-0.5 rounded-full",
-                      m.difficulty === "easy" && "bg-emerald-100 text-emerald-700",
-                      m.difficulty === "medium" && "bg-amber-100 text-amber-700",
-                      m.difficulty === "stretch" && "bg-violet-100 text-violet-700"
-                    )}>
-                      {m.difficulty}
-                    </span>
-                  )}
+          {!missionsLoading && missions.map((m) => (
+            <div key={m.id} className={cn("bg-white p-6 rounded-[32px] border-4 shadow-sm flex flex-col gap-4", m.completed ? "border-emerald-200 bg-emerald-50/50" : "border-emerald-100")}>
+              <div className="flex items-start justify-between gap-4">
+                <div className="space-y-1 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="text-xl font-black text-emerald-900">{m.title}</h3>
+                    {m.difficulty && (
+                      <span className={cn(
+                        "text-[10px] font-black uppercase px-2 py-0.5 rounded-full",
+                        m.difficulty === "easy" && "bg-emerald-100 text-emerald-700",
+                        m.difficulty === "medium" && "bg-amber-100 text-amber-700",
+                        m.difficulty === "stretch" && "bg-violet-100 text-violet-700"
+                      )}>
+                        {m.difficulty}
+                      </span>
+                    )}
+                    {m.completed && <span className="text-emerald-600 font-bold text-sm">Done!</span>}
+                  </div>
+                  <p className="text-slate-500 font-medium">{m.description}</p>
                 </div>
-                <p className="text-slate-500 font-medium">{m.description}</p>
+                <div className="bg-amber-100 px-4 py-2 rounded-2xl border-2 border-amber-200 text-amber-700 font-black flex items-center gap-2 shrink-0">
+                  <Star size={16} fill="currentColor" />
+                  {m.points}
+                </div>
               </div>
-              <div className="bg-amber-100 px-4 py-2 rounded-2xl border-2 border-amber-200 text-amber-700 font-black flex items-center gap-2 shrink-0">
-                <Star size={16} fill="currentColor" />
-                {m.points}
-              </div>
+              {Array.isArray(m.steps) && m.steps.length > 0 && (
+                <ol className="list-decimal list-inside space-y-1 text-emerald-800 font-medium text-sm md:text-base">
+                  {m.steps.map((step, i) => (
+                    <li key={i}>{step}</li>
+                  ))}
+                </ol>
+              )}
+              {!m.completed && (
+                <motion.button
+                  whileHover={{ scale: 1.02 }}
+                  whileTap={{ scale: 0.98 }}
+                  onClick={() => handleCompleteMission(m)}
+                  disabled={completingMissionId != null}
+                  className="w-full py-3 rounded-2xl bg-emerald-500 hover:bg-emerald-600 text-white font-black text-lg disabled:opacity-60 shadow-[0_4px_0_rgb(5,150,105)] active:shadow-[0_2px_0_rgb(5,150,105)] active:translate-y-0.5"
+                >
+                  {completingMissionId === m.id ? '...' : "I did it!"}
+                </motion.button>
+              )}
+              {m.completed && (
+                <p className="text-emerald-600 font-bold text-sm flex items-center gap-2">
+                  <Star size={16} fill="currentColor" />
+                  Done!
+                </p>
+              )}
             </div>
           ))}
-          {!missionsLoading && (
+          {!missionsLoading && missions.length > 0 && (
+            <div className="bg-emerald-100 p-6 rounded-[32px] border-4 border-dashed border-emerald-300 text-center space-y-2">
+              <p className="text-emerald-700 font-black text-lg uppercase">More coming soon!</p>
+              <p className="text-emerald-600 font-medium">Keep talking to {profile?.character_name || 'Tammy'} to get new missions.</p>
+            </div>
+          )}
+          {!missionsLoading && missions.length === 0 && (
             <div className="bg-emerald-100 p-8 rounded-[40px] border-4 border-dashed border-emerald-300 text-center space-y-2">
-              <p className="text-emerald-700 font-black text-xl uppercase">More Coming Soon!</p>
-              <p className="text-emerald-600 font-medium">Keep talking to earn more stars!</p>
+              <p className="text-emerald-700 font-black text-xl uppercase">No missions yet</p>
+              <p className="text-emerald-600 font-medium">Talk to {profile?.character_name || 'Tammy'} to get your first missions!</p>
             </div>
           )}
         </main>
-      </div>
-    );
-  }
-
-  if (mode === 'child-login') {
-    const handleChildLogin = async (e: React.FormEvent) => {
-      e.preventDefault();
-      setChildLoginError('');
-      if (!childLoginCode.trim()) {
-        setChildLoginError('Enter your code');
-        return;
-      }
-      if (!session) {
-        setChildLoginError(ERROR_MESSAGES.auth.pleaseLogIn);
-        return;
-      }
-      setChildLoginLoading(true);
-      try {
-        const res = await fetch('/api/child/verify', {
-          method: 'POST',
-          headers: apiHeaders(),
-          body: JSON.stringify({ code: childLoginCode.trim() }),
-        });
-        const data = await res.json();
-        if (!res.ok) {
-          setChildLoginError(data?.error || ERROR_MESSAGES.generic.tryAgain);
-          return;
-        }
-        const cid = data.child_id;
-        setSelectedChildId(cid);
-        const profileRes = await fetch('/api/profile', { headers: apiHeaders(cid) });
-        const profileData = profileRes.ok ? await profileRes.json() : null;
-        if (profileData) {
-          setProfile(profileData);
-          goTo('child');
-        } else {
-          setChildLoginError(ERROR_MESSAGES.generic.loadFailed);
-        }
-      } catch {
-        setChildLoginError(ERROR_MESSAGES.network.generic);
-      } finally {
-        setChildLoginLoading(false);
-      }
-    };
-    return (
-      <div className="min-h-screen bg-emerald-50 flex flex-col items-center justify-center p-6 font-sans">
-        <div className="bg-white p-10 rounded-[40px] shadow-2xl border-b-8 border-emerald-200 w-full max-w-sm space-y-6">
-          <div className="flex justify-center">
-            <div className="bg-emerald-100 p-6 rounded-full">
-              <Turtle size={64} className="text-emerald-600" />
-            </div>
-          </div>
-          <h2 className="text-2xl font-black text-emerald-900 text-center">Enter your code</h2>
-          <p className="text-emerald-700 text-center text-sm">Use the code your parent gave you to play.</p>
-          <form onSubmit={handleChildLogin} className="space-y-4">
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="Code"
-              value={childLoginCode}
-              onChange={(e) => setChildLoginCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              className="w-full bg-emerald-50 border-2 border-emerald-100 rounded-xl px-4 py-4 text-emerald-900 text-center text-2xl font-black tracking-[0.3em]"
-              maxLength={6}
-              autoFocus
-            />
-            {childLoginError && <p className="text-sm text-rose-600 text-center">{childLoginError}</p>}
-            <button type="submit" disabled={childLoginLoading} className="w-full bg-emerald-500 hover:bg-emerald-600 text-white font-bold py-4 rounded-xl disabled:opacity-50">
-              {childLoginLoading ? LOADING_MESSAGES.auth : 'Play'}
-            </button>
-          </form>
-          <button type="button" onClick={() => goTo('landing')} className="w-full text-sm text-slate-500 hover:underline">
-            Back
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  if (mode === 'parent') {
-    return (
-      <div className="min-h-screen pb-24 md:pb-0 bg-slate-50 flex flex-col font-sans">
-        <AppNav routeMode="parent" />
-        <header className="bg-white p-6 border-b border-slate-200 flex items-center justify-between sticky top-0 z-20">
-          <div className="flex items-center gap-4">
-            <button onClick={() => goTo('child')} className="p-2 hover:bg-slate-100 rounded-full transition-colors" aria-label="Back to play">
-              <ArrowLeft className="text-slate-600" />
-            </button>
-            <div>
-              <h1 className="text-2xl font-bold text-slate-900">Parent Portal</h1>
-              {selectedChildId && children.find(c => c.id === selectedChildId) && (
-                <p className="text-sm text-slate-500">Viewing: {children.find(c => c.id === selectedChildId)?.child_name}</p>
-              )}
-            </div>
-          </div>
-          <div className="flex items-center gap-3 flex-wrap">
-            <div className="flex items-center gap-2 bg-emerald-50 text-emerald-700 px-4 py-2 rounded-full text-sm font-medium">
-              <ShieldCheck size={16} />
-              Weekly summary
-            </div>
-            <button type="button" onClick={() => goTo('setup')} className="bg-slate-900 text-white px-4 py-2 rounded-xl text-sm font-bold">Add Child</button>
-            <button
-              type="button"
-              onClick={async () => {
-                await supabase?.auth.signOut();
-                setSession(null);
-                setProfile(null);
-                setSelectedChildId(null);
-                goTo('landing');
-              }}
-              className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-xl text-sm font-bold border border-slate-200"
-            >
-              Log out
-            </button>
-          </div>
-        </header>
-
-        {configError && (
-          <div className="bg-amber-50 border-b border-amber-200 p-4 flex items-center gap-3 text-amber-800">
-            <AlertTriangle size={20} className="shrink-0" />
-            <p className="text-sm font-medium">{configError}</p>
-            <button onClick={() => setConfigError(null)} className="ml-auto text-amber-900 font-bold">Close</button>
-          </div>
-        )}
-
-        {parentDataLoading && (
-          <div className="flex items-center justify-center gap-3 py-8 text-slate-600">
-            <motion.div animate={{ rotate: 360 }} transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}>
-              <Turtle size={32} className="text-emerald-500" />
-            </motion.div>
-            <p className="font-medium">{LOADING_MESSAGES.parent.summary}</p>
-          </div>
-        )}
-
-        <main className="flex-1 p-6 max-w-6xl mx-auto w-full grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Sidebar: Children List */}
-          <aside className="lg:col-span-3 space-y-4">
-            <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest px-2">Your Children</h2>
-            {children.map(child => (
-              <div key={child.id} className="space-y-2">
-                <button 
-                  onClick={() => setSelectedChildId(child.id)}
-                  className={cn(
-                    "w-full p-4 rounded-2xl flex items-center gap-3 transition-all border-2 text-left",
-                    selectedChildId === child.id 
-                      ? "bg-white border-emerald-500 shadow-md" 
-                      : "bg-slate-100 border-transparent hover:bg-slate-200"
-                  )}
-                >
-                  {child.image_data ? (
-                    <img src={child.image_data} className="w-10 h-10 rounded-full object-cover" alt="" />
-                  ) : (
-                    <div className="w-10 h-10 bg-slate-200 rounded-full flex items-center justify-center">🐢</div>
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className="font-bold text-slate-900">{child.child_name}</p>
-                    <p className="text-xs text-slate-500">{child.points} brave moments • {child.child_age} yrs</p>
-                  </div>
-                </button>
-                <div className="flex flex-wrap items-center gap-2 pl-1">
-                  <span className="text-xs font-medium text-slate-500">Access:</span>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      fetch('/api/profile', {
-                        method: 'PUT',
-                        headers: apiHeaders(child.id),
-                        body: JSON.stringify({ access_allowed: !(child.access_allowed !== false) }),
-                      }).then(() => fetchParentData());
-                    }}
-                    className={cn(
-                      "text-xs font-bold px-2 py-1 rounded-lg",
-                      child.access_allowed !== false ? "bg-emerald-100 text-emerald-700" : "bg-rose-100 text-rose-700"
-                    )}
-                  >
-                    {child.access_allowed !== false ? 'Allowed' : 'Denied'}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setRegenerateCodeResult(null);
-                      fetch('/api/child/regenerate-code', {
-                        method: 'POST',
-                        headers: apiHeaders(child.id),
-                      })
-                        .then((r) => r.json())
-                        .then((data) => data?.access_code && setRegenerateCodeResult(data.access_code))
-                        .then(() => fetchParentData());
-                    }}
-                    className="text-xs font-bold text-slate-600 hover:text-slate-900 underline"
-                  >
-                    Change code
-                  </button>
-                </div>
-                {regenerateCodeResult !== null && selectedChildId === child.id && (
-                  <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-center">
-                    <p className="text-xs font-bold text-amber-800">New code: <span className="tracking-widest">{regenerateCodeResult}</span></p>
-                    <button type="button" onClick={() => navigator.clipboard?.writeText(regenerateCodeResult)} className="text-xs text-amber-700 underline mt-1">Copy</button>
-                    <button type="button" onClick={() => setRegenerateCodeResult(null)} className="ml-2 text-xs text-slate-600">Close</button>
-                  </div>
-                )}
-              </div>
-            ))}
-          </aside>
-
-          {/* Main Content Area */}
-          <div className="lg:col-span-9 space-y-6">
-            {/* Top Row: Signals & Requests */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              {/* Requests Section */}
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
-                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <MessageCircle size={20} className="text-blue-500" />
-                  Pending Requests
-                </h2>
-                <div className="space-y-3">
-                  {requests.length === 0 && <p className="text-slate-400 italic text-sm">No pending requests.</p>}
-                  {requests.map(req => (
-                    <div key={req.id} className="bg-slate-50 p-4 rounded-2xl flex items-center justify-between">
-                      <div>
-                        <p className="text-xs font-black text-blue-600 uppercase">{req.request_type}</p>
-                        <p className="text-slate-800 font-medium">{req.request_text}</p>
-                      </div>
-                      <div className="flex gap-2">
-                        <button onClick={() => handleRequestAction(req.id, 'rejected')} className="p-2 bg-rose-100 text-rose-600 rounded-lg hover:bg-rose-200 transition-colors">Reject</button>
-                        <button onClick={() => handleRequestAction(req.id, 'approved')} className="p-2 bg-emerald-100 text-emerald-600 rounded-lg hover:bg-emerald-200 transition-colors">Approve</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </section>
-
-              {/* Signals Section */}
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
-                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Activity size={20} className="text-emerald-500" />
-                  Interaction Signals
-                </h2>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="bg-emerald-50 p-4 rounded-2xl">
-                    <p className="text-[10px] font-black text-emerald-600 uppercase">Safety</p>
-                    <p className="text-lg font-bold text-emerald-900">{report?.safety_status || 'Stable'}</p>
-                  </div>
-                  <div className="bg-blue-50 p-4 rounded-2xl">
-                    <p className="text-[10px] font-black text-blue-600 uppercase">Engagement</p>
-                    <p className="text-lg font-bold text-blue-900">High</p>
-                  </div>
-                </div>
-              </section>
-            </div>
-
-            {/* This week: courage + dinner question */}
-            {(report?.courage_counts || report?.suggested_dinner_question) && (
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
-                <h2 className="text-lg font-bold text-slate-900">This week your Explorer practiced</h2>
-                {report?.courage_counts && (
-                  <ul className="space-y-1 text-slate-700">
-                    {report.courage_counts.social > 0 && <li>• Social courage ({report.courage_counts.social})</li>}
-                    {report.courage_counts.performance > 0 && <li>• Performance bravery ({report.courage_counts.performance})</li>}
-                    {report.courage_counts.repair > 0 && <li>• Repair courage ({report.courage_counts.repair})</li>}
-                    {report.courage_counts.social === 0 && report.courage_counts.performance === 0 && report.courage_counts.repair === 0 && (
-                      <li className="text-slate-400 italic">No brave moments yet this week.</li>
-                    )}
-                  </ul>
-                )}
-                {report?.suggested_dinner_question && (
-                  <div className="pt-2 border-t border-slate-100">
-                    <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Suggested dinner question</p>
-                    <p className="text-emerald-700 font-medium mt-1">"{report.suggested_dinner_question}"</p>
-                  </div>
-                )}
-              </section>
-            )}
-
-            {/* Growth Moments & Summary */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
-                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                  <Sparkles size={20} className="text-amber-500" />
-                  Growth Moments
-                </h2>
-                <div className="space-y-4">
-                  {report?.growth_moments?.map((m, i) => (
-                    <div key={i} className="border-l-4 border-amber-400 pl-4 py-1">
-                      <p className="font-bold text-slate-900">{m.moment}</p>
-                      <p className="text-sm text-slate-500">{m.description}</p>
-                    </div>
-                  )) || <p className="text-slate-400 italic">Analyzing growth...</p>}
-                </div>
-              </section>
-
-              <section className="bg-emerald-900 text-white p-6 rounded-3xl shadow-xl space-y-4">
-                <h2 className="text-lg font-bold flex items-center gap-2">
-                  <User size={20} className="text-emerald-400" />
-                  AI Summary
-                </h2>
-                <p className="text-emerald-50 text-sm leading-relaxed">{report?.summary || 'Generating summary...'}</p>
-              </section>
-            </div>
-
-            {/* Book Recommendations */}
-            <section className="bg-white p-6 rounded-3xl shadow-sm border border-slate-100 space-y-4">
-              <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
-                <Lightbulb size={20} className="text-emerald-500" />
-                Personalized Reading List
-              </h2>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {report?.book_recommendations.map((book, i) => (
-                  <div key={i} className="bg-slate-50 p-4 rounded-2xl space-y-2 border border-slate-100">
-                    <div className="bg-white w-full aspect-[3/4] rounded-lg shadow-sm flex items-center justify-center text-slate-300">
-                      <Lightbulb size={40} />
-                    </div>
-                    <p className="font-bold text-slate-900 leading-tight">{book.title}</p>
-                    <p className="text-xs text-slate-500">by {book.author}</p>
-                    <p className="text-[10px] text-slate-400 italic">{book.reason}</p>
-                  </div>
-                )) || <p className="text-slate-400 italic">Finding books...</p>}
-              </div>
-            </section>
-          </div>
-        </main>
-      </div>
-    );
-  }
-
-  // Incoming Call Screen
-  if (mode === 'incoming-call') {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-emerald-500 to-emerald-600 flex flex-col items-center justify-center p-6 font-sans relative overflow-hidden">
-        {/* Animated background rings */}
-        <motion.div
-          animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0, 0.3] }}
-          transition={{ repeat: Infinity, duration: 2 }}
-          className="absolute w-96 h-96 rounded-full bg-white"
-        />
-        <motion.div
-          animate={{ scale: [1, 1.3, 1], opacity: [0.2, 0, 0.2] }}
-          transition={{ repeat: Infinity, duration: 2, delay: 0.5 }}
-          className="absolute w-80 h-80 rounded-full bg-white"
-        />
-
-        <motion.div
-          initial={{ y: 50, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          className="text-center space-y-8 z-10"
-        >
-          {/* Character Avatar */}
-          <motion.div
-            animate={{ y: [0, -10, 0] }}
-            transition={{ repeat: Infinity, duration: 1.5 }}
-            className="relative"
-          >
-            {profile?.image_data ? (
-              <img
-                src={profile.image_data}
-                alt="Character"
-                className="w-48 h-48 rounded-full border-8 border-white shadow-2xl object-cover mx-auto"
-              />
-            ) : (
-              <div className="w-48 h-48 bg-white rounded-full border-8 border-white shadow-2xl flex items-center justify-center text-8xl mx-auto">
-                🐢
-              </div>
-            )}
-            {/* Ringing indicator */}
+        <AnimatePresence>
+          {missionEncouragement && (
             <motion.div
-              animate={{ rotate: [0, 15, -15, 0] }}
-              transition={{ repeat: Infinity, duration: 0.5 }}
-              className="absolute -top-4 -right-4 bg-white p-4 rounded-full shadow-xl"
+              initial={{ opacity: 0, y: 50 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 30 }}
+              className="fixed inset-x-4 bottom-24 md:bottom-8 z-50 bg-amber-400 text-amber-950 p-6 rounded-[32px] shadow-2xl border-4 border-white flex flex-col gap-4"
             >
-              <PhoneIncoming size={32} className="text-emerald-500" />
+              <p className="text-xl font-black uppercase">{missionEncouragement.encouragement}</p>
+              <button
+                onClick={() => setMissionEncouragement(null)}
+                className="w-full py-3 rounded-xl bg-amber-600 text-white font-bold"
+              >
+                Done
+              </button>
             </motion.div>
-          </motion.div>
-
-          {/* Call info */}
-          <div>
-            <h1 className="text-5xl font-black text-white mb-2">
-              {profile?.character_name} is calling...
-            </h1>
-            <p className="text-2xl text-emerald-100 font-bold">
-              Ready for a brave conversation?
-            </p>
-          </div>
-
-          {/* Action buttons */}
-          <div className="flex gap-6 justify-center pt-8">
-            {/* Decline */}
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              onClick={() => goTo('child')}
-              className="bg-red-500 hover:bg-red-600 p-8 rounded-full shadow-2xl"
-            >
-              <PhoneOff size={40} className="text-white" strokeWidth={3} />
-            </motion.button>
-
-            {/* Answer */}
-            <motion.button
-              whileHover={{ scale: 1.1 }}
-              whileTap={{ scale: 0.9 }}
-              animate={{ scale: [1, 1.05, 1] }}
-              transition={{ repeat: Infinity, duration: 1 }}
-              onClick={() => {
-                goTo('connecting-call');
-              }}
-              className="bg-green-500 hover:bg-green-600 p-8 rounded-full shadow-2xl"
-            >
-              <Phone size={40} className="text-white" strokeWidth={3} />
-            </motion.button>
-          </div>
-
-          <p className="text-white/70 text-sm mt-4">
-            Tap the green button to answer
-          </p>
-        </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     );
   }
 
-  // Connecting Call Screen
-  if (mode === 'connecting-call') {
-    return (
-      <div className="min-h-screen bg-gradient-to-b from-emerald-400 to-emerald-500 flex flex-col items-center justify-center p-6 font-sans">
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          className="text-center space-y-8"
-        >
-          {/* Connecting animation */}
-          <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ repeat: Infinity, duration: 2, ease: 'linear' }}
-            className="relative"
-          >
-            {profile?.image_data ? (
-              <img
-                src={profile.image_data}
-                alt="Character"
-                className="w-40 h-40 rounded-full border-8 border-white shadow-2xl object-cover mx-auto"
-              />
-            ) : (
-              <div className="w-40 h-40 bg-white rounded-full border-8 border-white shadow-2xl flex items-center justify-center text-7xl mx-auto">
-                🐢
-              </div>
-            )}
-            <motion.div
-              animate={{ scale: [1, 1.2, 1] }}
-              transition={{ repeat: Infinity, duration: 1 }}
-              className="absolute inset-0 rounded-full border-4 border-white/50"
-            />
-          </motion.div>
-
-          <div>
-            <h1 className="text-4xl font-black text-white mb-2">
-              Starting a call with {profile?.character_name}...
-            </h1>
-            <motion.div
-              animate={{ opacity: [1, 0.5, 1] }}
-              transition={{ repeat: Infinity, duration: 1.5 }}
-              className="flex items-center justify-center gap-2 text-emerald-100 text-xl font-bold"
-            >
-              <div className="w-2 h-2 bg-white rounded-full" />
-              <div className="w-2 h-2 bg-white rounded-full" style={{ animationDelay: '0.2s' }} />
-              <div className="w-2 h-2 bg-white rounded-full" style={{ animationDelay: '0.4s' }} />
-            </motion.div>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // On Call Screen
+  // On Call Screen (entered directly from Talk to Tammy) – voice only, no chat/text
   if (mode === 'on-call') {
-    const handleSendOnCall = async () => {
-      if (!input.trim() || isLoading) return;
-
-      const childId = selectedChildId ?? profile?.id;
-      if (childId == null) {
-        const pickCharacterMsg = "Please pick a character first so we know who's on the call!";
-        setMessages(prev => {
-          const last = prev[prev.length - 1];
-          if (last?.role === 'model' && last?.content === pickCharacterMsg) return prev;
-          return [...prev, {
-            id: Date.now(),
-            role: 'model' as const,
-            content: pickCharacterMsg,
-            timestamp: new Date().toISOString()
-          }];
-        });
-        return;
-      }
-
-      const userMsg = input;
-      setInput('');
-      setIsLoading(true);
-
-      const tempId = Date.now();
-      setMessages(prev => [...prev, { id: tempId, role: 'user', content: userMsg, timestamp: new Date().toISOString() }]);
-
-      try {
-        const res = await fetch('/api/chat', {
-          method: 'POST',
-          headers: apiHeaders(childId),
-          body: JSON.stringify({ message: userMsg, child_id: childId }),
-        });
-        const data = await res.json();
-
-        if (res.status === 401) {
-          setConfigError(ERROR_MESSAGES.auth.pleaseLogIn);
-          setIsLoading(false);
-          return;
-        }
-
-        if (!res.ok) {
-          setMessages(prev => [...prev, {
-            id: Date.now(),
-            role: 'model',
-            content: data.error || ERROR_MESSAGES.generic.tryAgain,
-            timestamp: new Date().toISOString()
-          }]);
-          return;
-        }
-
-        setMessages(prev => [...prev, { id: Date.now(), role: 'model', content: data.response, timestamp: new Date().toISOString() }]);
-
-        // Speak the response if not muted
-        if (!isMuted && data.response) {
-          speak(data.response);
-        }
-
-        if (data.updatedProfile) {
-          setProfile(data.updatedProfile);
-        }
-
-        if (data.newBadges && data.newBadges.length > 0) {
-          setShowBadgePopup(data.newBadges[0]);
-          fetchBadges();
-          setTimeout(() => setShowBadgePopup(null), 4000);
-        }
-      } catch (err) {
-        console.error(err);
-        setMessages(prev => [...prev, {
-          id: Date.now(),
-          role: 'model',
-          content: "Oops! I'm having a little trouble. Can you check the internet?",
-          timestamp: new Date().toISOString()
-        }]);
-      } finally {
-        setIsLoading(false);
-      }
-    };
-
     return (
-      <div className="min-h-screen bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col font-sans max-w-2xl mx-auto relative">
+      <div className="min-h-screen min-h-[100dvh] bg-gradient-to-b from-slate-900 to-slate-800 flex flex-col font-sans w-full max-w-2xl mx-auto relative">
         {/* Header - Character Video Area */}
-        <div className="bg-gradient-to-b from-emerald-500 to-emerald-600 p-8 relative">
+        <div className="bg-gradient-to-b from-emerald-500 to-emerald-600 p-4 sm:p-6 md:p-8 relative">
           {/* Call duration with timer */}
           <div className="absolute top-4 left-4 bg-black/30 backdrop-blur-sm px-4 py-2 rounded-full">
             <div className="text-white font-bold text-sm flex items-center gap-2">
@@ -2005,7 +1078,7 @@ export default function App() {
           </div>
 
           {/* Character Avatar - Large with reactive eyes */}
-          <div className="flex flex-col items-center justify-center py-12">
+          <div className="flex flex-col items-center justify-center py-6 sm:py-8 md:py-12">
             <motion.div
               animate={isSpeaking ? {
                 scale: [1, 1.05, 1],
@@ -2018,10 +1091,10 @@ export default function App() {
                 <img
                   src={profile.image_data}
                   alt="Character"
-                  className="w-64 h-64 rounded-full border-8 border-white shadow-2xl object-cover"
+                  className="w-48 h-48 sm:w-56 sm:h-56 md:w-64 md:h-64 rounded-full border-4 md:border-8 border-white shadow-2xl object-cover"
                 />
               ) : (
-                <div className="w-64 h-64 bg-white rounded-full border-8 border-white shadow-2xl flex items-center justify-center text-9xl">
+                <div className="w-48 h-48 sm:w-56 sm:h-56 md:w-64 md:h-64 bg-white rounded-full border-4 md:border-8 border-white shadow-2xl flex items-center justify-center text-7xl sm:text-8xl md:text-9xl">
                   🐢
                 </div>
               )}
@@ -2053,153 +1126,46 @@ export default function App() {
               )}
             </motion.div>
 
-            <h2 className="text-4xl font-black text-white mt-6">
+            <h2 className="text-2xl sm:text-3xl md:text-4xl font-black text-white mt-4 sm:mt-6">
               {profile?.character_name}
             </h2>
-            <p className="text-emerald-100 font-bold text-lg">Your Brave Friend</p>
+            <p className="text-emerald-100 font-bold text-base sm:text-lg">Your Brave Friend</p>
           </div>
         </div>
 
-        {/* Scrolling conversation: big words, last few messages, doesn't take too much space */}
-        <div ref={scrollRef} className="flex-1 min-h-0 flex flex-col bg-slate-800 px-4 py-3 overflow-y-auto">
-          <div className="space-y-2 pb-2">
-            {/* Last 6 messages + live transcripts: scroll away as new ones appear (dedupe "pick character" errors) */}
-            {(() => {
-              const pickChar = "Please pick a character first so we know who's on the call!";
-              const recent = messages.slice(-6).filter((msg, i, arr) => {
-                if (msg.role !== 'model' || msg.content !== pickChar) return true;
-                return !arr.slice(0, i).some(m => m.role === 'model' && m.content === pickChar);
-              });
-              return recent;
-            })().map((msg) => (
-              <div
-                key={msg.id}
-                className={cn("flex w-full", msg.role === 'user' ? "justify-end" : "justify-start")}
-              >
-                <div className={cn(
-                  "max-w-[90%] px-4 py-3 rounded-2xl text-xl leading-snug",
-                  msg.role === 'user'
-                    ? "bg-emerald-500 text-white"
-                    : "bg-white text-slate-900"
-                )}>
-                  <div className="prose prose-lg prose-p:my-1 prose-p:leading-snug max-w-none [&_*]:text-inherit">
-                    <Markdown>{msg.content}</Markdown>
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {/* Live: what the character just said (voice mode) */}
-            {aiTranscript && (
-              <div className="flex justify-start">
-                <div className="max-w-[90%] bg-white px-4 py-3 rounded-2xl shadow-lg">
-                  <p className="text-xs font-bold text-emerald-600 uppercase mb-1">{profile?.character_name}</p>
-                  <p className="text-slate-900 text-xl leading-snug">{aiTranscript}</p>
-                </div>
-              </div>
-            )}
-
-            {/* Live: what the child is saying (voice mode) */}
-            {(childTranscript || voiceRecognition.interimTranscript) && (
-              <div className="flex justify-end">
-                <div className="max-w-[90%] bg-emerald-500 px-4 py-3 rounded-2xl shadow-lg">
-                  <p className="text-xs font-bold text-emerald-100 uppercase mb-1">{profile?.child_name}</p>
-                  <p className="text-white text-xl leading-snug">
-                    {childTranscript || voiceRecognition.interimTranscript}
-                    <span className="inline-block w-2 h-5 bg-white ml-1 animate-pulse align-middle" />
-                  </p>
-                </div>
-              </div>
-            )}
-
-            {/* Loading */}
-            {isLoading && (
-              <div className="flex justify-start">
-                <div className="bg-white/90 px-4 py-3 rounded-2xl flex gap-2 items-center">
-                  {[0, 0.2, 0.4].map(d => (
-                    <motion.div
-                      key={d}
-                      animate={{ y: [0, -6, 0] }}
-                      transition={{ repeat: Infinity, duration: 0.6, delay: d }}
-                      className="w-2.5 h-2.5 bg-emerald-400 rounded-full"
-                    />
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Listening indicator (compact) */}
-            {voiceRecognition.isListening && !childTranscript && !voiceRecognition.interimTranscript && (
-              <div className="flex justify-center py-1">
-                <div className="bg-emerald-500/30 px-4 py-2 rounded-full flex items-center gap-2">
-                  <Mic size={18} className="text-white" />
-                  <span className="text-white font-bold text-sm">Listening...</span>
-                </div>
-              </div>
-            )}
-
-            {/* Voice/speech error – friendly message and dismiss */}
-            {(getVoiceErrorMessage(voiceRecognition.error) || (speechError && ERROR_MESSAGES.speech.soundHiccup)) && (
-              <div className="flex justify-center py-2">
-                <div className="bg-amber-500/90 text-white px-4 py-3 rounded-2xl flex items-center justify-between gap-3 max-w-md">
-                  <span className="text-sm font-medium">
-                    {getVoiceErrorMessage(voiceRecognition.error) || ERROR_MESSAGES.speech.soundHiccup}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => { voiceRecognition.reset(); clearSpeechError(); }}
-                    className="shrink-0 text-white/90 hover:text-white font-bold text-sm underline"
-                  >
-                    OK
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Input Area - Minimized in Voice Mode */}
-        <div className="p-4 bg-slate-900 border-t-2 border-slate-700">
-          {/* Voice Mode Instructions */}
-          {isVoiceMode ? (
-            <div className="text-center py-6">
-              <p className="text-slate-400 text-sm mb-2">Voice mode active</p>
-              <p className="text-white font-bold text-lg">Tap the mic button to toggle voice</p>
-              <button
-                onClick={() => setShowTextInput(!showTextInput)}
-                className="mt-4 text-emerald-400 underline text-sm"
-              >
-                {showTextInput ? 'Hide' : 'Show'} keyboard
-              </button>
-            </div>
-          ) : null}
-
-          {/* Text Input (Collapsed in Voice Mode) */}
-          {(!isVoiceMode || showTextInput) && (
-            <div className="flex gap-3 items-center mb-4">
-              <div className="flex-1 bg-slate-800 border-4 border-slate-700 rounded-[32px] px-6 py-4 focus-within:border-emerald-500 transition-all">
-                <input
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSendOnCall()}
-                  placeholder="Say something..."
-                  className="w-full bg-transparent outline-none text-white placeholder:text-slate-500 text-xl font-bold"
-                />
-              </div>
-              <motion.button
-                whileHover={{ scale: 1.1 }}
-                whileTap={{ scale: 0.9 }}
-                onClick={handleSendOnCall}
-                disabled={isLoading}
-                className="touch-target bg-emerald-500 hover:bg-emerald-600 text-white p-5 rounded-2xl shadow-xl disabled:opacity-50 min-h-[48px] min-w-[48px]"
-              >
-                <Send size={28} strokeWidth={3} />
-              </motion.button>
+        {/* Status area: listening / speaking / or quiet */}
+        <div className="flex-1 min-h-0 flex flex-col items-center justify-center bg-slate-800/50 px-4 py-6">
+          {isSpeaking && !isMuted && (
+            <div className="flex items-center gap-2 text-emerald-200 font-bold text-lg">
+              <Volume2 size={24} />
+              <span>Speaking...</span>
             </div>
           )}
+          {voiceRecognition.isListening && !childTranscript && !voiceRecognition.interimTranscript && !isSpeaking && (
+            <div className="flex items-center gap-2 text-emerald-200 font-bold text-lg">
+              <Mic size={24} />
+              <span>Listening...</span>
+            </div>
+          )}
+          {(getVoiceErrorMessage(voiceRecognition.error) || (speechError && ERROR_MESSAGES.speech.soundHiccup)) && (
+            <div className="bg-amber-500/90 text-white px-4 py-3 rounded-2xl flex items-center justify-between gap-3 max-w-md mt-2">
+              <span className="text-sm font-medium">
+                {getVoiceErrorMessage(voiceRecognition.error) || ERROR_MESSAGES.speech.soundHiccup}
+              </span>
+              <button
+                type="button"
+                onClick={() => { voiceRecognition.reset(); clearSpeechError(); }}
+                className="shrink-0 text-white/90 hover:text-white font-bold text-sm underline"
+              >
+                OK
+              </button>
+            </div>
+          )}
+        </div>
 
-          {/* Call controls */}
-          <div className="flex justify-center gap-4">
+        {/* Footer: end call only */}
+        <div className="p-6 bg-slate-900 border-t-2 border-slate-700">
+          <div className="flex justify-center">
             <button
               onClick={() => {
                 stop();

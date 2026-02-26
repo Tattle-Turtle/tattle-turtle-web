@@ -15,24 +15,25 @@ dotenv.config();
 
 console.log('\n🔍 Checking Environment Configuration...\n');
 
+// Prefer Vite env names (match .env.example)
 const checks = [
   {
-    name: 'GEMINI_API_KEY',
-    value: process.env.GEMINI_API_KEY,
+    name: 'VITE_GEMINI_API_KEY',
+    value: process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY,
     required: true,
     validate: (val) => val && val.startsWith('AIza') && !val.includes('REPLACE'),
     help: 'Get your Gemini API key from https://ai.google.dev/'
   },
   {
-    name: 'SUPABASE_URL',
-    value: process.env.SUPABASE_URL,
+    name: 'VITE_SUPABASE_URL',
+    value: process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL,
     required: true,
     validate: (val) => val && val.startsWith('https://') && val.includes('supabase.co') && !val.includes('REPLACE'),
     help: 'Get from Supabase Project Settings → API'
   },
   {
-    name: 'SUPABASE_ANON_KEY',
-    value: process.env.SUPABASE_ANON_KEY,
+    name: 'VITE_SUPABASE_ANON_KEY',
+    value: process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY,
     required: true,
     validate: (val) => val && val.startsWith('eyJ') && !val.includes('REPLACE'),
     help: 'Get from Supabase Project Settings → API'

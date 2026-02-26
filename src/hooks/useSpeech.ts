@@ -10,37 +10,46 @@ export function useSpeech() {
   const [isSupported, setIsSupported] = useState(false);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const utteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+  const voicesRef = useRef<SpeechSynthesisVoice[]>([]);
 
   useEffect(() => {
-    setIsSupported('speechSynthesis' in window);
+    const ok = 'speechSynthesis' in window;
+    setIsSupported(ok);
+    if (!ok) return;
+
+    const loadVoices = () => {
+      voicesRef.current = window.speechSynthesis.getVoices();
+    };
+    loadVoices();
+    window.speechSynthesis.onvoiceschanged = loadVoices;
+    return () => {
+      window.speechSynthesis.onvoiceschanged = null;
+    };
   }, []);
 
-  const speak = (text: string, options?: { rate?: number; pitch?: number; voice?: string }) => {
-    if (!isSupported) return;
-    setSpeechError(null);
-
-    // Cancel any ongoing speech
+  const doSpeak = (text: string, opts: { rate?: number; pitch?: number; voice?: string } | undefined, retry = 0) => {
     window.speechSynthesis.cancel();
-
     const utterance = new SpeechSynthesisUtterance(text);
-
-    // Configure voice for kid-friendly character
-    utterance.rate = options?.rate || 0.9; // Slightly slower for clarity
-    utterance.pitch = options?.pitch || 1.1; // Slightly higher for friendly character
+    utterance.rate = opts?.rate ?? 0.9;
+    utterance.pitch = opts?.pitch ?? 1.1;
     utterance.volume = 1;
 
-    // Try to find a friendly voice
-    const voices = window.speechSynthesis.getVoices();
-    const friendlyVoice = voices.find(v =>
+    const voices = voicesRef.current.length > 0 ? voicesRef.current : window.speechSynthesis.getVoices();
+    if (voices.length === 0 && retry < 2) {
+      setTimeout(() => {
+        voicesRef.current = window.speechSynthesis.getVoices();
+        doSpeak(text, opts, retry + 1);
+      }, retry === 0 ? 100 : 300);
+      return;
+    }
+    const friendlyVoice = voices.length > 0 && voices.find(v =>
       v.name.includes('Google') ||
       v.name.includes('Female') ||
       v.name.includes('Samantha') ||
-      v.name.includes('Victoria')
+      v.name.includes('Victoria') ||
+      v.lang.startsWith('en')
     );
-
-    if (friendlyVoice) {
-      utterance.voice = friendlyVoice;
-    }
+    if (friendlyVoice) utterance.voice = friendlyVoice;
 
     utterance.onstart = () => setIsSpeaking(true);
     utterance.onend = () => {
@@ -51,9 +60,14 @@ export function useSpeech() {
       setIsSpeaking(false);
       setSpeechError('sound_error');
     };
-
     utteranceRef.current = utterance;
     window.speechSynthesis.speak(utterance);
+  };
+
+  const speak = (text: string, options?: { rate?: number; pitch?: number; voice?: string }) => {
+    if (!isSupported) return;
+    setSpeechError(null);
+    doSpeak(text, options);
   };
 
   const stop = () => {

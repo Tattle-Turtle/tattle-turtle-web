@@ -409,3 +409,64 @@ Because:
 - Wearable integration = “Brave reminder vibration.”
 
 This becomes a courage engine.
+
+Escalation should be triggered by pattern + intensity + risk indicators.
+
+🔴 A. High-Risk Content (Immediate Escalation)
+
+If student mentions:
+
+Self-harm
+
+Wanting to disappear
+
+Being physically hurt
+
+Threats from others
+
+Ongoing bullying
+
+Fear of going home/school
+
+These are hard triggers.
+
+No second-guessing.
+
+🟠 B. Repeated Pattern Signal
+
+If:
+
+Same issue mentioned multiple times across sessions
+
+Same peer conflict repeated
+
+Same distressing theme recurring
+
+Pattern = stronger signal than intensity.
+
+🟡 C. Emotional Intensity Threshold
+
+Escalate if:
+
+Strong distress words:
+
+“I’m scared.”
+
+“I can’t handle it.”
+
+“I feel alone all the time.”
+
+Crying + negative cognition
+
+Intensity alone should not escalate.
+Intensity + persistence should.
+
+🟣 D. Power Imbalance Signal
+
+Escalate if:
+
+Student indicates being excluded repeatedly
+
+Mentions older student threatening them
+
+Mentions being forced or pressured

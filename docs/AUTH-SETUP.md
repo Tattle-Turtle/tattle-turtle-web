@@ -1,58 +1,30 @@
 # Auth setup (Supabase)
 
-Multi-role auth uses Supabase Auth with roles stored in `public.profiles` and injected into the JWT via a database function.
+**Auth is currently removed.** The app runs without login. The server uses a single parent identity from the environment so all data is scoped to that user.
 
-## 1. Custom Access Token Hook
+## No-login mode (current)
 
-The migration creates `public.custom_access_token_hook(event jsonb)`. You must **register it** in the Supabase Dashboard so every issued token includes the `role` claim:
+1. **Create one parent user in Supabase** (so `child_profile.parent_id` has a valid `auth.users.id`):
+   - Supabase Dashboard → **Authentication** → **Users** → **Add user** (email + password). Copy the user’s **UUID**.
 
-1. Open [Supabase Dashboard](https://app.supabase.com) → your project.
-2. Go to **Authentication** → **Hooks** (or **Customize**).
-3. Under **Customize Access Token**, set the hook to the function **`custom_access_token_hook`** (schema: `public`).
+2. **Set in `.env.local`:**
+   - `DEFAULT_PARENT_ID=<paste-uuid>`  
+   With this set, every API request without a Bearer token is treated as that parent. The client does not send a token, so the app works without any login screen.
 
-After this, new sign-ins will receive a JWT with `role` (admin | school | parent | child).
+3. **Other env (still required for DB):**
+   - `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` so the server can read/write Supabase (e.g. `child_profile`, `messages`).
 
-## 2. First admin
+## Behavior
 
-The first admin cannot be set by another admin. Create them manually after they sign up:
+- **Landing:** “Add your first child” / “Parent portal” goes to parent or setup; “I have a code” goes to child code entry.
+- **Parent portal:** Add children, view reports, celebrations. No sign-in; server uses `DEFAULT_PARENT_ID`.
+- **Child code:** Child (or parent on their device) goes to **/play**, enters the code; server verifies against the default parent’s children and returns `child_id`; client then loads the talk screen.
+- **/login:** Route shows the parent portal (no login form).
 
-1. Have the user sign up (e.g. as a parent).
-2. In Supabase Dashboard → **SQL Editor**, run:
+## Re-enabling auth later
 
-```sql
-UPDATE public.profiles
-SET role = 'admin'
-WHERE id = '<the user auth.users id>';
-```
+To bring back Supabase Auth and login UI you would:
 
-Or get the user id from **Authentication** → **Users**, then run the same `UPDATE` with that id (UUID for Supabase users, or Firebase UID string for Firebase users).
-
-## 3. Firebase (third-party auth)
-
-If you use **Firebase** as a third-party auth provider in Supabase:
-
-1. **Custom claim `role: 'authenticated'`**  
-   Supabase needs the JWT `role` claim to grant the Postgres `authenticated` role. Set this for all Firebase users:
-   - **Blocking function** (Firebase Identity Platform): `beforeUserCreated` / `beforeUserSignedIn` with `customClaims: { role: 'authenticated' }`, or  
-   - **onCreate** Cloud Function + a one-time script with the Firebase Admin SDK to set `role: 'authenticated'` for existing users.
-
-2. **App role (admin/school/parent/child)**  
-   Firebase JWTs do not get the Custom Access Token Hook, so they only have `role: 'authenticated'`. The server looks up the app role from `profiles`; on first sign-in with a Firebase JWT it creates a profile with `role = 'parent'`. To make a Firebase user an admin, run in SQL:  
-   `UPDATE public.profiles SET role = 'admin' WHERE id = '<firebase-uid>';`
-
-3. **Restrictive RLS**  
-   Restrictive policies are in place so only JWTs from this Supabase project or from the Firebase project **tattle-turtle** are accepted. If you use a different Firebase project ID, add a migration that updates `public.is_allowed_jwt()` to include that project’s `iss` and `aud`.
-
-## 4. Environment
-
-- **Server**: `SUPABASE_SERVICE_ROLE_KEY` is required for server-side writes (bypasses RLS). Add to `.env.local`; never expose to the client.
-- **Client**: Browser auth uses the same `SUPABASE_URL` and `SUPABASE_ANON_KEY` (Vite injects them). If unset, parent login will show "Auth not configured."
-
-## 5. Roles
-
-- **admin**: Full access; can set user roles via `PATCH /api/admin/users/:id/role`.
-- **school**: For school officials (dashboard/invites can be added later).
-- **parent**: Default for new signups; can add children and use parent portal.
-- **child**: Reserved for future child accounts.
-
-All roles are managed in the database and exposed in the JWT by the Custom Access Token Hook.
+- Restore client: `getSession` / `onAuthStateChange`, send `Authorization: Bearer <token>` in API requests.
+- Server: in `requireAuth`, stop using `DEFAULT_PARENT_ID` when a valid token is present (keep validating JWT and set `req.user` from it).
+- Optionally keep `DEFAULT_PARENT_ID` as fallback for development when no token is sent.

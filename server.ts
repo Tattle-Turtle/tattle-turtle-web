@@ -2,30 +2,35 @@ import express from "express";
 import { createServer as createViteServer } from "vite";
 import { createClient } from "@supabase/supabase-js";
 import { GoogleGenAI, Type } from "@google/genai";
+import OpenAI from "openai";
 import dotenv from "dotenv";
 import path from "path";
 import { generateCharacterAvatar } from "./lib/avatars.js";
-import { AgentOrchestrator, FEATURE_FLAGS } from "./lib/agents/index.js";
+import { AgentOrchestrator, FEATURE_FLAGS, evaluateEscalation, ESCALATION_TIER2_MESSAGE, MissionsAgent } from "./lib/agents/index.js";
+import { notifyParent, looksLikeE164 } from "./lib/sms/escalationService.js";
 
 // Load environment variables from .env.local (preferred) or .env
 dotenv.config({ path: path.resolve(process.cwd(), '.env.local') });
 dotenv.config(); // Fallback to .env
 
+// Prefer Vite env names (VITE_*), fall back to legacy names
+const supabaseUrl = process.env.VITE_SUPABASE_URL || process.env.SUPABASE_URL || "";
+const supabaseKey = process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || "";
+const supabaseServiceKey = process.env.VITE_SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_ROLE_KEY || "";
+const geminiApiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+const openaiApiKey = process.env.VITE_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+
 console.log("🔧 Environment Check:");
-console.log("  - GEMINI_API_KEY:", process.env.GEMINI_API_KEY ? "✓ Set" : "✗ Missing");
-console.log("  - SUPABASE_URL:", process.env.SUPABASE_URL ? "✓ Set" : "✗ Missing");
-console.log("  - SUPABASE_ANON_KEY:", process.env.SUPABASE_ANON_KEY ? "✓ Set" : "✗ Missing");
+console.log("  - OPENAI_API_KEY:", openaiApiKey ? "✓ Set" : "✗ Missing");
+console.log("  - GEMINI_API_KEY:", geminiApiKey ? "✓ Set" : "✗ Missing");
+console.log("  - SUPABASE_URL:", supabaseUrl ? "✓ Set" : "✗ Missing");
+console.log("  - SUPABASE_ANON_KEY:", supabaseKey ? "✓ Set" : "✗ Missing");
 console.log("  - PLIVO_AUTH_ID:", process.env.PLIVO_AUTH_ID ? "✓ Set" : "✗ Missing");
 console.log("  - PLIVO_AUTH_TOKEN:", process.env.PLIVO_AUTH_TOKEN ? "✓ Set" : "✗ Missing");
 console.log("  - PLIVO_PHONE_NUMBER:", process.env.PLIVO_PHONE_NUMBER ? "✓ Set" : "✗ Missing");
 
-// Initialize Supabase
-const supabaseUrl = process.env.SUPABASE_URL || "";
-const supabaseKey = process.env.SUPABASE_ANON_KEY || "";
-const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-
 if (!supabaseUrl || !supabaseKey) {
-  console.error("⚠️  SUPABASE_URL and SUPABASE_ANON_KEY must be set in .env.local file");
+  console.error("⚠️  VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY (or SUPABASE_*) must be set in .env.local");
   console.error("⚠️  Copy .env.example to .env.local and add your Supabase credentials");
 }
 
@@ -35,63 +40,44 @@ const supabaseAdmin = supabaseServiceKey
   ? createClient(supabaseUrl, supabaseServiceKey)
   : supabase;
 
-// Auth: decode JWT payload to read custom claim "role" (set by Custom Access Token Hook)
-function decodeJwtPayload(token: string): { sub?: string; email?: string; role?: string } {
-  try {
-    const parts = token.split(".");
-    if (parts.length !== 3) return {};
-    const payload = JSON.parse(
-      Buffer.from(parts[1], "base64url").toString("utf8")
-    );
-    return {
-      sub: payload.sub,
-      email: payload.email ?? payload.email_address,
-      role: payload.role ?? payload.app_metadata?.role,
-    };
-  } catch {
-    return {};
-  }
-}
-
 export type AuthUser = { id: string; email?: string; role: string };
 
-const APP_ROLES = ["admin", "school", "parent", "child"] as const;
+/** Admin = any authenticated user whose email is in ADMIN_EMAILS (comma-separated). Supabase used for auth only. */
+function isAdminEmail(email: string | undefined): boolean {
+  if (!email) return false;
+  const list = process.env.ADMIN_EMAILS?.split(",").map((e) => e.trim().toLowerCase()).filter(Boolean) ?? [];
+  return list.includes(email.toLowerCase());
+}
+
+// When auth is disabled, use this parent id when DEFAULT_PARENT_ID is not set (child_profile no longer FK to auth.users).
+const FALLBACK_PARENT_ID = "00000000-0000-4000-8000-000000000001";
 
 async function requireAuth(req: express.Request, res: express.Response, next: express.NextFunction) {
   const authHeader = req.headers.authorization;
   const token = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const defaultParentId = process.env.DEFAULT_PARENT_ID?.trim() || FALLBACK_PARENT_ID;
   if (!token) {
-    return res.status(401).json({ error: "Unauthorized", code: "auth_required" });
+    (req as express.Request & { user?: AuthUser }).user = {
+      id: defaultParentId,
+      email: undefined,
+      role: "parent",
+    };
+    return next();
   }
   const { data: { user }, error } = await supabase.auth.getUser(token);
   if (error || !user) {
-    return res.status(401).json({ error: "Invalid or expired token", code: "auth_invalid" });
+    (req as express.Request & { user?: AuthUser }).user = {
+      id: defaultParentId,
+      email: undefined,
+      role: "parent",
+    };
+    return next();
   }
-  const payload = decodeJwtPayload(token);
-  const userId = String(user.id);
-  let role: string = payload.role ?? "";
-  if (!APP_ROLES.includes(role as any)) {
-    const { data: profile } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-    if (profile?.role) {
-      role = String(profile.role);
-    } else {
-      const { data: inserted, error: insertErr } = await supabaseAdmin.from("profiles").insert({
-        id: userId,
-        role: "parent",
-        email: user.email ?? payload.email ?? null,
-        full_name: (user as any).user_metadata?.full_name ?? (user as any).user_metadata?.name ?? payload.email?.split("@")[0] ?? null,
-      }).select("role").single();
-      if (insertErr?.code === "23505") {
-        const { data: existing } = await supabaseAdmin.from("profiles").select("role").eq("id", userId).single();
-        role = existing?.role ? String(existing.role) : "parent";
-      } else {
-        role = inserted?.role ? String(inserted.role) : "parent";
-      }
-    }
-  }
+  const email = user.email ?? (user as any).user_metadata?.email ?? undefined;
+  const role = isAdminEmail(email) ? "admin" : "parent";
   (req as express.Request & { user?: AuthUser }).user = {
-    id: userId,
-    email: user.email ?? payload.email,
+    id: String(user.id),
+    email,
     role,
   };
   next();
@@ -112,18 +98,18 @@ function getAuthUser(req: express.Request): AuthUser | undefined {
 }
 
 // Resolve child_id for parent: from query, body, or header; ensure parent owns the child.
-// If none provided, use the parent's first child (same as /api/profile) so calls always work.
 async function resolveChildId(
   req: express.Request,
   parentId: string
 ): Promise<{ childId: number | null; error?: string }> {
+  const db = supabaseAdmin;
   let childId =
     Number(req.query.child_id) ||
     Number((req as any).body?.child_id) ||
     Number(req.headers["x-child-id"]) ||
     null;
   if (childId == null || isNaN(childId)) {
-    const { data: first } = await supabaseAdmin
+    const { data: first } = await db
       .from("child_profile")
       .select("id")
       .eq("parent_id", parentId)
@@ -134,7 +120,7 @@ async function resolveChildId(
     }
     return { childId: null, error: "child_id required" };
   }
-  const { data: row } = await supabaseAdmin
+  const { data: row } = await db
     .from("child_profile")
     .select("id")
     .eq("id", childId)
@@ -151,31 +137,79 @@ app.use(express.json());
 
 const PORT = 3000;
 
-// AI Setup
-let aiClient: GoogleGenAI | null = null;
+// AI Setup: prefer OpenAI when key is set, else Gemini
+type AIClient = { provider: "openai"; client: OpenAI } | { provider: "google"; client: GoogleGenAI };
+let openaiClient: OpenAI | null = null;
+let googleAIClient: GoogleGenAI | null = null;
 
-function getAI() {
-  const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
-    return null;
+function getAIClient(): AIClient | null {
+  const openaiKey = process.env.VITE_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  if (openaiKey && openaiKey.trim() !== "") {
+    if (!openaiClient) openaiClient = new OpenAI({ apiKey: openaiKey });
+    return { provider: "openai", client: openaiClient };
   }
-  if (!aiClient) {
-    aiClient = new GoogleGenAI({ apiKey });
+  const geminiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  if (geminiKey && geminiKey !== "MY_GEMINI_API_KEY" && geminiKey.trim() !== "") {
+    if (!googleAIClient) googleAIClient = new GoogleGenAI({ apiKey: geminiKey });
+    return { provider: "google", client: googleAIClient };
   }
-  return aiClient;
+  return null;
+}
+
+/** Unified chat completion: system + messages, optional JSON response. Uses OpenAI when key set, else Gemini. */
+async function aiGenerate(params: {
+  systemInstruction?: string;
+  contents: { role: "user" | "model"; text: string }[];
+  model?: string;
+  responseMimeType?: "application/json";
+}): Promise<{ text: string }> {
+  const ai = getAIClient();
+  if (!ai) throw new Error("MISSING_API_KEY");
+
+  if (ai.provider === "openai") {
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [];
+    if (params.systemInstruction) messages.push({ role: "system", content: params.systemInstruction });
+    for (const c of params.contents) {
+      messages.push({ role: c.role === "model" ? "assistant" : "user", content: c.text });
+    }
+    const res = await ai.client.chat.completions.create({
+      model: params.model ?? "gpt-4o-mini",
+      messages,
+      response_format: params.responseMimeType === "application/json" ? { type: "json_object" } : undefined,
+    });
+    const text = res.choices[0]?.message?.content ?? "";
+    return { text };
+  }
+
+  const contents = params.contents.map((c) => ({
+    role: c.role as "user" | "model",
+    parts: [{ text: c.text }],
+  }));
+  const response = await ai.client.models.generateContent({
+    model: params.model ?? "gemini-2.0-flash-exp",
+    contents,
+    config: {
+      systemInstruction: params.systemInstruction,
+      responseMimeType: params.responseMimeType,
+    },
+  });
+  return { text: response.text ?? "" };
 }
 
 // Multi-Agent System Setup
 let agentOrchestrator: AgentOrchestrator | null = null;
 
 function getAgentOrchestrator() {
-  const apiKey = process.env.GEMINI_API_KEY;
+  const openaiKey = process.env.VITE_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
+  const geminiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  const apiKey = openaiKey?.trim() ? openaiKey : geminiKey;
   if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
     return null;
   }
   if (!agentOrchestrator && FEATURE_FLAGS.USE_LANGCHAIN_AGENTS) {
-    agentOrchestrator = new AgentOrchestrator(apiKey);
-    console.log("🤖 Multi-Agent System Initialized");
+    const provider = openaiKey?.trim() ? "openai" : "google";
+    agentOrchestrator = new AgentOrchestrator(apiKey, provider);
+    console.log("🤖 Multi-Agent System Initialized (" + provider + ")");
     console.log("  - Safety Agent: ✓");
     console.log("  - Routing Agent: ✓");
     console.log("  - Specialist Agents: ✓");
@@ -186,25 +220,20 @@ function getAgentOrchestrator() {
 // --- AGENTS LOGIC ---
 
 async function runGuardrails(userInput: string) {
-  const ai = getAI();
-  if (!ai) throw new Error("MISSING_API_KEY");
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: `You are a safety guardrail agent for a children's app. 
+  const prompt = `You are a safety guardrail agent for a children's app. 
     Analyze the following message from a child. 
     If it contains harmful content, self-harm, bullying, or inappropriate topics, return "UNSAFE: [Reason]". 
     Otherwise, return "SAFE".
-    
-    Message: "${userInput}"`
+
+    Message: "${userInput}"`;
+  const { text } = await aiGenerate({
+    contents: [{ role: "user", text: prompt }],
+    model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
   });
-  
-  return response.text.trim();
+  return text.trim();
 }
 
 async function getConversationalResponse(userInput: string, history: any[], childId?: number | null) {
-  const ai = getAI();
-  if (!ai) throw new Error("MISSING_API_KEY");
-
   const q = supabaseAdmin.from("child_profile").select("*");
   const { data: profile } = childId != null
     ? await q.eq("id", childId).single()
@@ -243,21 +272,18 @@ async function getConversationalResponse(userInput: string, history: any[], chil
 - Call them a "Brave Explorer" when they share something courageous
 - Be warm and encouraging, like a trusted friend${patternRecall}`;
 
-  const contents = history.map(m => ({
-    role: m.role === 'user' ? 'user' : 'model',
-    parts: [{ text: m.content }]
+  const contents = history.map((m) => ({
+    role: (m.role === "user" ? "user" : "model") as "user" | "model",
+    text: m.content,
   }));
-  contents.push({ role: 'user', parts: [{ text: userInput }] });
+  contents.push({ role: "user", text: userInput });
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
+  const { text } = await aiGenerate({
+    systemInstruction,
     contents,
-    config: {
-      systemInstruction
-    }
+    model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
   });
-
-  return response.text;
+  return text;
 }
 
 async function getMemoryPatterns(): Promise<string[]> {
@@ -272,17 +298,19 @@ async function getMemoryPatterns(): Promise<string[]> {
 }
 
 async function saveStructuredMemory(userMessage: string, modelResponse: string, _childId?: number | null) {
-  const ai = getAI();
-  if (!ai) return;
+  if (!getAIClient()) return;
   try {
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: `From this exchange, extract ONE short situation pattern (e.g. "nervous about saying hi" or "friend conflict") and ONE courage category: social, performance, or repair. Do NOT quote the child. Return JSON only: { "pattern": "short phrase", "category": "social"|"performance"|"repair" }.
+    const { text: rawText } = await aiGenerate({
+      contents: [{
+        role: "user",
+        text: `From this exchange, extract ONE short situation pattern (e.g. "nervous about saying hi" or "friend conflict") and ONE courage category: social, performance, or repair. Do NOT quote the child. Return JSON only: { "pattern": "short phrase", "category": "social"|"performance"|"repair" }.
 User: ${userMessage.slice(0, 200)}
 Model: ${modelResponse.slice(0, 200)}`,
-      config: { responseMimeType: "application/json" }
+      }],
+      model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
+      responseMimeType: "application/json",
     });
-    let text = response.text?.trim() || "{}";
+    let text = rawText?.trim() || "{}";
     const objMatch = text.match(/\{[\s\S]*\}/);
     if (objMatch) text = objMatch[0];
     const { pattern, category } = JSON.parse(text);
@@ -296,12 +324,9 @@ Model: ${modelResponse.slice(0, 200)}`,
 }
 
 async function generateParentReport(childId?: number | null) {
-  const ai = getAI();
-  if (!ai) throw new Error("MISSING_API_KEY");
-
   const q = supabaseAdmin.from("messages").select("*").order("timestamp", { ascending: false }).limit(50);
   const { data: recentMessages } = childId != null ? await q.eq("child_id", childId) : await q;
-  
+
   const prompt = `You are a child development expert. Based on these recent chat logs between a child and an AI turtle (Brave Call app — small acts of courage), provide a WEEKLY summary for the parent. Do NOT quote or repeat specific things the child said. Keep it privacy-first: no transcripts, no emotional details, no incidents.
   1. A brief summary (1-2 sentences) of what the child explored or practiced this week — high level only.
   2. Courage categories: Estimate how many times this week the child practiced each type: Social courage (e.g. saying hi, sharing), Performance bravery (e.g. trying something new, speaking up), Repair courage (e.g. apologizing, making up). Return counts as: { "social": number, "performance": number, "repair": number }.
@@ -310,63 +335,19 @@ async function generateParentReport(childId?: number | null) {
   5. A brief safety assessment (one word or short phrase: e.g. Stable, Positive).
   6. 3 book recommendations (title, author, reason).
   7. 2 "Growth Moments" — positive behaviors or milestones (moment + description), no quotes from child.
-  
+
   Logs (use only for pattern/category inference; do not quote or expose in output):
   ${JSON.stringify(recentMessages)}
-  
+
   Return as JSON with keys: summary, courage_counts (object with social, performance, repair numbers), suggested_dinner_question (string), suggestions (array), safety_status, book_recommendations (array of {title, author, reason}), growth_moments (array of {moment, description}).`;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-3-flash-preview",
-    contents: prompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          summary: { type: Type.STRING },
-          courage_counts: {
-            type: Type.OBJECT,
-            properties: {
-              social: { type: Type.NUMBER },
-              performance: { type: Type.NUMBER },
-              repair: { type: Type.NUMBER }
-            }
-          },
-          suggested_dinner_question: { type: Type.STRING },
-          suggestions: { 
-            type: Type.ARRAY,
-            items: { type: Type.STRING }
-          },
-          safety_status: { type: Type.STRING },
-          book_recommendations: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                author: { type: Type.STRING },
-                reason: { type: Type.STRING }
-              }
-            }
-          },
-          growth_moments: {
-            type: Type.ARRAY,
-            items: {
-              type: Type.OBJECT,
-              properties: {
-                moment: { type: Type.STRING },
-                description: { type: Type.STRING }
-              }
-            }
-          }
-        },
-        required: ["summary", "courage_counts", "suggested_dinner_question", "suggestions", "safety_status", "book_recommendations", "growth_moments"]
-      }
-    }
+  const { text: responseText } = await aiGenerate({
+    contents: [{ role: "user", text: prompt }],
+    model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
+    responseMimeType: "application/json",
   });
-  
-  return JSON.parse(response.text);
+
+  return JSON.parse(responseText || "{}");
 }
 
 // Generate character avatar instantly (no API calls!)
@@ -383,14 +364,11 @@ export type CallAnalysisResult = {
 };
 
 async function analyzeCallConversation(messages: { role: string; content: string }[]): Promise<CallAnalysisResult | null> {
-  const ai = getAI();
-  if (!ai || !messages.length) return null;
+  if (!getAIClient() || !messages.length) return null;
   const transcript = messages
     .map((m) => `${m.role === "user" ? "Child" : "Character"}: ${m.content}`)
     .join("\n");
-  const response = await ai.models.generateContent({
-    model: "gemini-2.0-flash-exp",
-    contents: `You are analyzing a short conversation between a child and a supportive character (e.g. a turtle friend) in a kids' app. The goal is to summarize the conversation, note any issues to report (safety, emotional distress, bullying, etc.), and suggest 1–3 simple "ideas for the child" to guide them (e.g. "Try telling a grown-up how you felt", "You could try one small brave thing tomorrow").
+  const prompt = `You are analyzing a short conversation between a child and a supportive character (e.g. a turtle friend) in a kids' app. The goal is to summarize the conversation, note any issues to report (safety, emotional distress, bullying, etc.), and suggest 1–3 simple "ideas for the child" to guide them (e.g. "Try telling a grown-up how you felt", "You could try one small brave thing tomorrow").
 
 Conversation:
 ${transcript}
@@ -400,11 +378,13 @@ Respond with a JSON object only, no other text:
   "summary": "1–2 sentence kid-friendly summary of what they talked about",
   "issues": ["list", "of", "any", "concerns", "or", "empty", "array"],
   "suggestions": ["idea 1 for the child", "idea 2", "idea 3"]
-}`,
-    config: { responseMimeType: "application/json" },
+}`;
+  const { text } = await aiGenerate({
+    contents: [{ role: "user", text: prompt }],
+    model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
+    responseMimeType: "application/json",
   });
-  const text = response.text?.trim() || "{}";
-  const parsed = JSON.parse(text) as CallAnalysisResult;
+  const parsed = JSON.parse((text || "{}").trim()) as CallAnalysisResult;
   return {
     summary: parsed.summary || "",
     issues: Array.isArray(parsed.issues) ? parsed.issues : [],
@@ -465,18 +445,8 @@ async function checkAndAwardBadges(message: string, totalMessages: number, child
 
 // --- ROUTES ---
 
-// Optional: ensure profile exists after signup (trigger creates it; this syncs email/name)
-app.post("/api/auth/profile", requireAuth, async (req, res) => {
-  const user = getAuthUser(req)!;
-  const { data: existing } = await supabaseAdmin.from("profiles").select("id").eq("id", user.id).single();
-  if (existing) return res.json({ ok: true });
-  const { error } = await supabaseAdmin.from("profiles").insert({
-    id: user.id,
-    role: "parent",
-    email: user.email,
-    full_name: user.email?.split("@")[0],
-  });
-  if (error) return res.status(500).json({ error: error.message });
+// Auth-only: no profiles table; just confirm session is valid
+app.post("/api/auth/profile", requireAuth, (_req, res) => {
   res.json({ ok: true });
 });
 
@@ -555,7 +525,59 @@ app.post("/api/chat", requireAuth, async (req, res) => {
         throw new Error(result.error || "Agent processing failed");
       }
 
-      const response = result.response!.content;
+      let response = result.response!.content;
+
+      // Escalation: tier 0-3 from distress signals + safety
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: recentByDay } = await supabaseAdmin
+        .from("messages")
+        .select("timestamp")
+        .eq("child_id", childId)
+        .eq("role", "user")
+        .gte("timestamp", sevenDaysAgo);
+      const uniqueDays = new Set((recentByDay || []).map((r: { timestamp: string }) => r.timestamp.slice(0, 10))).size;
+      const patternOverDays = uniqueDays >= 2;
+
+      const escalationResult = evaluateEscalation({
+        userMessage: message,
+        recentMessages: (history || []).map(m => ({ role: m.role, content: m.content })),
+        safetyCheck: result.safetyCheck ?? undefined,
+        context,
+        patternOverDays,
+      });
+
+      if (escalationResult.tier === 2) {
+        response = response + "\n\n" + ESCALATION_TIER2_MESSAGE;
+      } else if (escalationResult.tier === 1) {
+        response = response + "\n\nI'm here for you whenever you want to talk.";
+      }
+
+      if (escalationResult.tier === 3 && FEATURE_FLAGS.ENABLE_SMS_ESCALATION && escalationResult.messageToParent) {
+        const { data: profileForContact } = await supabaseAdmin
+          .from("child_profile")
+          .select("parent_contact")
+          .eq("id", childId)
+          .single();
+        if (profileForContact?.parent_contact && looksLikeE164(profileForContact.parent_contact)) {
+          const parentContact = profileForContact.parent_contact;
+          notifyParent({
+            parentContact,
+            messageToParent: escalationResult.messageToParent,
+          })
+            .then(async (r) => {
+              if (r.sent) {
+                await supabaseAdmin.from("parent_alerts").insert({
+                  child_id: childId,
+                  tier: 3,
+                  severity: result.safetyCheck?.severity ?? null,
+                  message_sent: escalationResult.messageToParent ?? null,
+                  parent_contact_masked: parentContact.slice(-4),
+                });
+              }
+            })
+            .catch(err => console.error("[Escalation] notifyParent failed:", err));
+        }
+      }
 
       // Save messages
       await supabaseAdmin.from("messages").insert({ role: 'user', content: message, child_id: childId });
@@ -668,7 +690,7 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   } catch (error: any) {
     if (error.message === "MISSING_API_KEY") {
       return res.status(401).json({
-        error: "Shelly needs her magic key! Please set your GEMINI_API_KEY in the Secrets panel.",
+        error: "Shelly needs her magic key! Please set OPENAI_API_KEY or GEMINI_API_KEY in the Secrets panel.",
         isConfigError: true
       });
     }
@@ -752,6 +774,73 @@ app.post("/api/call/analyze", requireAuth, async (req, res) => {
   }
 });
 
+// Create 3 missions from conversation (post-call); persists to missions table
+app.post("/api/call/missions", requireAuth, async (req, res) => {
+  const user = getAuthUser(req)!;
+  const resolved = await resolveChildId(req, user.id);
+  if (resolved.error || resolved.childId == null) {
+    return res.status(400).json({ error: resolved.error ?? "child_id required" });
+  }
+  const childId = resolved.childId;
+  const messages = req.body?.messages as { role: string; content: string }[] | undefined;
+  if (!Array.isArray(messages) || messages.length === 0) {
+    return res.status(400).json({ error: "messages array required" });
+  }
+  const apiKey = process.env.VITE_GEMINI_API_KEY || process.env.GEMINI_API_KEY;
+  if (!apiKey || apiKey === "MY_GEMINI_API_KEY" || apiKey.trim() === "") {
+    return res.status(503).json({ error: "Missions not available" });
+  }
+  try {
+    const { data: profile } = await supabaseAdmin
+      .from("child_profile")
+      .select("child_name, character_name, character_type")
+      .eq("id", childId)
+      .single();
+    const context = profile ? {
+      childName: profile.child_name || "friend",
+      characterName: profile.character_name || "Shelly",
+      characterType: profile.character_type || "Turtle",
+      recentMessages: messages.slice(-6).map((m: { role: string; content: string }) => ({
+        role: m.role as "user" | "model",
+        content: m.content,
+        timestamp: new Date().toISOString(),
+      })),
+    } : undefined;
+    const missionsAgent = new MissionsAgent(apiKey);
+    const specs = await missionsAgent.generateMissions(messages, context);
+    const rows = specs.map((s) => ({
+      child_id: childId,
+      title: s.title,
+      description: s.description,
+      difficulty: s.difficulty,
+      points: s.points,
+      steps: s.steps,
+      completed: false,
+      source: "call",
+    }));
+    const { data: inserted, error } = await supabaseAdmin.from("missions").insert(rows).select("id, title, description, difficulty, points, steps, completed, completed_at, shared_with_parent_at, created_at");
+    if (error) {
+      console.error("Insert missions error:", error);
+      return res.status(500).json({ error: "Could not save missions" });
+    }
+    const withId = (inserted || []).map((r: any, i: number) => ({
+      id: r.id,
+      title: r.title ?? specs[i].title,
+      description: r.description ?? specs[i].description,
+      difficulty: r.difficulty ?? specs[i].difficulty,
+      points: r.points ?? specs[i].points,
+      steps: r.steps ?? specs[i].steps,
+      completed: r.completed ?? false,
+      completed_at: r.completed_at,
+      shared_with_parent_at: r.shared_with_parent_at,
+    }));
+    res.json({ missions: withId });
+  } catch (e: any) {
+    console.error("Post-call missions error:", e);
+    res.status(500).json({ error: e.message || "Missions failed" });
+  }
+});
+
 app.get("/api/badges", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
   const resolved = await resolveChildId(req, user.id);
@@ -763,20 +852,41 @@ app.get("/api/badges", requireAuth, async (req, res) => {
 
 app.get("/api/profile", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
+  const db = supabaseAdmin;
   const resolved = await resolveChildId(req, user.id);
   if (resolved.childId != null) {
-    const { data: profile } = await supabaseAdmin
+    const { data: profile } = await db
       .from("child_profile")
       .select("*")
       .eq("id", resolved.childId)
       .single();
     return res.json(profile ?? null);
   }
-  const { data: rows } = await supabaseAdmin
+  let { data: rows } = await db
     .from("child_profile")
     .select("*")
     .eq("parent_id", user.id)
     .limit(1);
+  if (!rows || rows.length === 0) {
+    const imageData = generateCharacterImage("Tammy", "Turtle", "Emerald");
+    const { data: defaultChild, error: insertErr } = await db
+      .from("child_profile")
+      .insert({
+        parent_id: user.id,
+        parent_contact: "",
+        child_name: "Brave Explorer",
+        child_age: 6,
+        character_name: "Tammy",
+        character_type: "Turtle",
+        color: "Emerald",
+        image_data: imageData,
+        access_code: generateAccessCode(),
+        access_allowed: true,
+      })
+      .select()
+      .single();
+    if (!insertErr && defaultChild) return res.json(defaultChild);
+  }
   res.json(rows?.[0] ?? null);
 });
 
@@ -788,6 +898,16 @@ app.post("/api/profile", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
   const { parent_contact, child_name, child_age, character_name, character_type, color } = req.body;
 
+  const trimmedName = typeof child_name === 'string' ? child_name.trim() : '';
+  if (!trimmedName) {
+    return res.status(400).json({ error: "Please enter your child's name." });
+  }
+
+  const age = child_age != null ? Number(child_age) : NaN;
+  if (Number.isNaN(age) || age < 4 || age > 12) {
+    return res.status(400).json({ error: "Please choose an age between 4 and 12." });
+  }
+
   try {
     const charName = character_name || 'Shelly';
     const charType = character_type || 'Turtle';
@@ -795,13 +915,21 @@ app.post("/api/profile", requireAuth, async (req, res) => {
     const imageData = generateCharacterImage(charName, charType, charColor);
     const access_code = generateAccessCode();
 
-    const { data: newProfile } = await supabaseAdmin
+    const db = supabaseAdmin;
+    const { count } = await db
+      .from("child_profile")
+      .select("id", { count: "exact", head: true })
+      .eq("parent_id", user.id);
+    const useAuthContactOnly = (count ?? 0) > 0;
+    const parentContact = useAuthContactOnly ? (user.email ?? "") : (parent_contact ?? user.email ?? "");
+
+    const { data: newProfile, error: insertError } = await db
       .from("child_profile")
       .insert({
         parent_id: user.id,
-        parent_contact: parent_contact ?? user.email,
-        child_name,
-        child_age,
+        parent_contact: parentContact,
+        child_name: trimmedName,
+        child_age: age,
         character_name: charName,
         character_type: charType,
         color: charColor,
@@ -812,6 +940,10 @@ app.post("/api/profile", requireAuth, async (req, res) => {
       .select()
       .single();
 
+    if (insertError) {
+      console.error("Profile creation error:", insertError);
+      return res.status(500).json({ error: insertError.message || "Failed to create profile" });
+    }
     res.json(newProfile);
   } catch (error) {
     console.error("Profile creation error:", error);
@@ -866,7 +998,8 @@ app.post("/api/child/verify", requireAuth, async (req, res) => {
     return res.status(400).json({ error: "Code required" });
   }
   const trimmed = String(code).trim().replace(/\s/g, "");
-  const { data: child } = await supabaseAdmin
+  const db = supabaseAdmin;
+  const { data: child } = await db
     .from("child_profile")
     .select("id")
     .eq("parent_id", user.id)
@@ -919,34 +1052,62 @@ app.get("/api/characters", (req, res) => {
   res.json(charactersWithImages);
 });
 
+const FALLBACK_MISSIONS_LIST = [
+  { id: 1, title: "Say Hello", description: "Say hi to your friend!", difficulty: "easy", points: 20, completed: false, steps: ["Say hi to someone", "Smile when you say it"] },
+  { id: 2, title: "Kind Words", description: "Use a kind word like 'please' or 'thank you'.", difficulty: "medium", points: 35, completed: false, steps: ["Pick one kind word", "Use it with someone today"] },
+  { id: 3, title: "Curious Turtle", description: "Ask a question about the ocean.", difficulty: "stretch", points: 50, completed: false, steps: ["Think of one question", "Ask a grown-up or friend"] },
+];
+
 app.get("/api/missions", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
   const resolved = await resolveChildId(req, user.id);
   const childId = resolved.childId;
-  const fallbackMissions = [
-    { id: 1, title: "Say Hello", description: "Say hi to your friend!", difficulty: "easy", points: 20, completed: false },
-    { id: 2, title: "Kind Words", description: "Use a kind word like 'please' or 'thank you'.", difficulty: "medium", points: 35, completed: false },
-    { id: 3, title: "Curious Turtle", description: "Ask a question about the ocean.", difficulty: "stretch", points: 50, completed: false },
-  ];
 
   try {
-    const q = supabaseAdmin.from("messages").select("role, content").order("timestamp", { ascending: false }).limit(10);
-    const { data: recentMessages } = childId != null ? await q.eq("child_id", childId) : await q;
-    if (!recentMessages || recentMessages.length === 0) return res.json(fallbackMissions);
+    if (childId != null) {
+      const sevenDaysAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+      const { data: dbMissions } = await supabaseAdmin
+        .from("missions")
+        .select("id, title, description, difficulty, points, steps, completed, completed_at, shared_with_parent_at, created_at")
+        .eq("child_id", childId)
+        .order("completed", { ascending: true })
+        .order("created_at", { ascending: false });
+      const list = (dbMissions || []).filter((m: any) => !m.completed || (m.completed_at && m.completed_at >= sevenDaysAgo));
+      const active = list.filter((m: any) => !m.completed);
+      const completed = list.filter((m: any) => m.completed);
+      const toReturn = [...active, ...completed].slice(0, 20);
+      if (toReturn.length >= 3) {
+        return res.json(toReturn.map((m: any) => ({
+          id: m.id,
+          title: m.title,
+          description: m.description,
+          difficulty: m.difficulty,
+          points: m.points,
+          steps: Array.isArray(m.steps) ? m.steps : [],
+          completed: m.completed ?? false,
+          completed_at: m.completed_at,
+          shared_with_parent_at: m.shared_with_parent_at,
+        })));
+      }
+    }
 
-    const ai = getAI();
-    if (!ai) return res.json(fallbackMissions);
+    const recentMessages = childId != null
+      ? (await supabaseAdmin.from("messages").select("role, content").eq("child_id", childId).order("timestamp", { ascending: false }).limit(10)).data
+      : null;
+    if (!recentMessages || recentMessages.length === 0) return res.json(FALLBACK_MISSIONS_LIST);
 
-    const prompt = `Based on this short conversation between a child and a Brave Call turtle (helping with small brave moves), suggest exactly 3 "brave missions" the child could try now. One EASY, one MEDIUM, one STRETCH. Keep each mission one sentence, specific to the situation. Return JSON array of 3 objects: { "title": string, "description": string, "difficulty": "easy"|"medium"|"stretch" }. No other text.
+    if (!getAIClient()) return res.json(FALLBACK_MISSIONS_LIST);
+
+    const prompt = `Based on this short conversation between a child and a Brave Call turtle (helping with small brave moves), suggest exactly 3 "brave missions" the child could try now. One EASY, one MEDIUM, one STRETCH. Keep each mission one sentence, specific to the situation. Return JSON array of 3 objects: { "title": string, "description": string, "difficulty": "easy"|"medium"|"stretch", "steps": string[] } (steps: 2-4 short actionable strings). No other text.
 Conversation:
 ${JSON.stringify(recentMessages)}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3-flash-preview",
-      contents: prompt,
-      config: { responseMimeType: "application/json" }
+    const { text: rawText } = await aiGenerate({
+      contents: [{ role: "user", text: prompt }],
+      model: openaiApiKey ? "gpt-4o-mini" : "gemini-2.0-flash-exp",
+      responseMimeType: "application/json",
     });
-    let text = response.text?.trim() || "[]";
+    let text = rawText?.trim() || "[]";
     const arrayMatch = text.match(/\[[\s\S]*\]/);
     if (arrayMatch) text = arrayMatch[0];
     const parsed = JSON.parse(text);
@@ -954,25 +1115,85 @@ ${JSON.stringify(recentMessages)}`;
     const pointsByDifficulty: Record<string, number> = { easy: 20, medium: 35, stretch: 50 };
     const missions = list.map((m: any, i: number) => ({
       id: i + 1,
-      title: m.title || fallbackMissions[i].title,
-      description: m.description || fallbackMissions[i].description,
+      title: m.title || FALLBACK_MISSIONS_LIST[i].title,
+      description: m.description || FALLBACK_MISSIONS_LIST[i].description,
       difficulty: m.difficulty || ["easy", "medium", "stretch"][i],
       points: pointsByDifficulty[m.difficulty] || pointsByDifficulty["medium"],
       completed: false,
+      steps: Array.isArray(m.steps) ? m.steps : FALLBACK_MISSIONS_LIST[i].steps,
     }));
-    if (missions.length < 3) {
-      while (missions.length < 3) missions.push(fallbackMissions[missions.length]);
-    }
+    while (missions.length < 3) missions.push({ ...FALLBACK_MISSIONS_LIST[missions.length], id: missions.length + 1 });
     res.json(missions);
   } catch (e) {
-    console.error("Missions generation failed:", e);
-    res.json(fallbackMissions);
+    console.error("Missions failed:", e);
+    res.json(FALLBACK_MISSIONS_LIST);
   }
+});
+
+async function ensureMissionOwnership(missionId: number, userId: string): Promise<{ mission?: any; error?: string }> {
+  const { data: mission, error: missionErr } = await supabaseAdmin.from("missions").select("id, child_id").eq("id", missionId).single();
+  if (missionErr || !mission) return { error: "Mission not found" };
+  const { data: child } = await supabaseAdmin.from("child_profile").select("id").eq("id", mission.child_id).eq("parent_id", userId).maybeSingle();
+  if (!child) return { error: "Mission not found" };
+  return { mission };
+}
+
+const ENCOURAGEMENTS = [
+  "You did it! That was brave.",
+  "Tammy is so proud of you!",
+  "That was a brave move!",
+  "You're a star!",
+  "Well done, brave explorer!",
+];
+
+app.patch("/api/missions/:id/complete", requireAuth, async (req, res) => {
+  const user = getAuthUser(req)!;
+  const missionId = Number(req.params.id);
+  if (!Number.isInteger(missionId) || missionId < 1) return res.status(400).json({ error: "Invalid mission id" });
+  const { mission, error } = await ensureMissionOwnership(missionId, user.id);
+  if (error) return res.status(404).json({ error });
+  const { error: updateErr } = await supabaseAdmin.from("missions").update({ completed: true, completed_at: new Date().toISOString() }).eq("id", missionId);
+  if (updateErr) return res.status(500).json({ error: "Could not complete mission" });
+  const encouragement = ENCOURAGEMENTS[Math.floor(Math.random() * ENCOURAGEMENTS.length)];
+  res.json({ success: true, encouragement });
+});
+
+app.post("/api/missions/:id/share", requireAuth, async (req, res) => {
+  const user = getAuthUser(req)!;
+  const missionId = Number(req.params.id);
+  if (!Number.isInteger(missionId) || missionId < 1) return res.status(400).json({ error: "Invalid mission id" });
+  const { mission, error } = await ensureMissionOwnership(missionId, user.id);
+  if (error) return res.status(404).json({ error });
+  const { error: updateErr } = await supabaseAdmin.from("missions").update({ shared_with_parent_at: new Date().toISOString() }).eq("id", missionId);
+  if (updateErr) return res.status(500).json({ error: "Could not share mission" });
+  res.json({ success: true });
+});
+
+app.get("/api/parent/celebrations", requireAuth, async (req, res) => {
+  const user = getAuthUser(req)!;
+  const db = supabaseAdmin;
+  const childIds = (await db.from("child_profile").select("id").eq("parent_id", user.id)).data?.map((c: { id: number }) => c.id) ?? [];
+  if (childIds.length === 0) return res.json([]);
+  const { data: missions } = await supabaseAdmin
+    .from("missions")
+    .select("id, title, child_id, shared_with_parent_at")
+    .not("shared_with_parent_at", "is", null)
+    .in("child_id", childIds)
+    .order("shared_with_parent_at", { ascending: false })
+    .limit(15);
+  const withChildName = await Promise.all(
+    (missions || []).map(async (m: any) => {
+      const { data: child } = await db.from("child_profile").select("child_name").eq("id", m.child_id).single();
+      return { id: m.id, title: m.title, child_name: child?.child_name ?? "Your child", shared_at: m.shared_with_parent_at };
+    })
+  );
+  res.json(withChildName);
 });
 
 app.get("/api/parent/requests", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
-  const childIds = (await supabaseAdmin.from("child_profile").select("id").eq("parent_id", user.id)).data?.map((c: { id: number }) => c.id) ?? [];
+  const db = supabaseAdmin;
+  const childIds = (await db.from("child_profile").select("id").eq("parent_id", user.id)).data?.map((c: { id: number }) => c.id) ?? [];
   if (childIds.length === 0) return res.json([]);
   const { data: requests } = await supabaseAdmin
     .from("child_requests")
@@ -986,7 +1207,8 @@ app.post("/api/parent/requests/:id", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
   const { id } = req.params;
   const { status } = req.body;
-  const childIds = (await supabaseAdmin.from("child_profile").select("id").eq("parent_id", user.id)).data?.map((c: { id: number }) => c.id) ?? [];
+  const db = supabaseAdmin;
+  const childIds = (await db.from("child_profile").select("id").eq("parent_id", user.id)).data?.map((c: { id: number }) => c.id) ?? [];
   const { data: reqRow } = await supabaseAdmin.from("child_requests").select("child_id").eq("id", id).single();
   if (!reqRow || !childIds.includes(reqRow.child_id)) return res.status(404).json({ error: "Request not found" });
   await supabaseAdmin.from("child_requests").update({ status }).eq("id", id);
@@ -995,7 +1217,8 @@ app.post("/api/parent/requests/:id", requireAuth, async (req, res) => {
 
 app.get("/api/parent/children", requireAuth, async (req, res) => {
   const user = getAuthUser(req)!;
-  const { data: children } = await supabaseAdmin
+  const db = supabaseAdmin;
+  const { data: children } = await db
     .from("child_profile")
     .select("id, child_name, child_age, level, points, image_data, access_allowed")
     .eq("parent_id", user.id);
@@ -1012,6 +1235,7 @@ app.post("/api/parent/children", requireAuth, async (req, res) => {
   const charType = character_type || "Turtle";
   const charColor = color || "Emerald";
   const imageData = generateCharacterImage(charName, charType, charColor);
+  const access_code = generateAccessCode();
   const { data: newProfile, error } = await supabaseAdmin
     .from("child_profile")
     .insert({
@@ -1023,6 +1247,8 @@ app.post("/api/parent/children", requireAuth, async (req, res) => {
       character_type: charType,
       color: charColor,
       image_data: imageData,
+      access_code,
+      access_allowed: true,
     })
     .select()
     .single();
@@ -1030,31 +1256,21 @@ app.post("/api/parent/children", requireAuth, async (req, res) => {
   res.json(newProfile);
 });
 
-app.get("/api/admin/users", requireAuth, requireRole("admin"), async (req, res) => {
+app.get("/api/admin/users", requireAuth, requireRole("admin"), async (_req, res) => {
   const { data: users, error } = await supabaseAdmin.auth.admin.listUsers();
   if (error) return res.status(500).json({ error: error.message });
-  const { data: profiles } = await supabaseAdmin.from("profiles").select("id, role, email, full_name");
-  const byId = (profiles ?? []).reduce((acc: Record<string, { role: string; email?: string; full_name?: string }>, p: any) => {
-    acc[p.id] = { role: p.role, email: p.email, full_name: p.full_name };
-    return acc;
-  }, {});
   const list = (users?.users ?? []).map((u) => ({
     id: u.id,
-    email: u.email,
-    ...byId[u.id],
+    email: u.email ?? undefined,
+    role: isAdminEmail(u.email ?? undefined) ? "admin" : "parent",
   }));
   res.json(list);
 });
 
-app.patch("/api/admin/users/:id/role", requireAuth, requireRole("admin"), async (req, res) => {
-  const { id } = req.params;
-  const { role } = req.body;
-  if (!role || !["admin", "school", "parent", "child"].includes(role)) {
-    return res.status(400).json({ error: "Invalid role" });
-  }
-  const { error } = await supabaseAdmin.rpc("set_user_role", { target_user_id: id, new_role: role });
-  if (error) return res.status(500).json({ error: error.message });
-  res.json({ success: true });
+app.patch("/api/admin/users/:id/role", requireAuth, requireRole("admin"), (_req, res) => {
+  res.status(400).json({
+    error: "Role changes are disabled. Supabase is used for auth only; set ADMIN_EMAILS in env to designate admins.",
+  });
 });
 
 // Vite Middleware
